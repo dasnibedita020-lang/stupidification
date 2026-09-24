@@ -131,43 +131,174 @@ function explore(){
 }
 function progress(){const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;const hard=Object.values(state.cardRatings).filter(x=>x==='hard').length;app.innerHTML=shell('Progress','Local practice stats are shown here for now. Account-based cloud progress will be added alongside authentication.');app.innerHTML+=`<div class="grid"><div class="card"><span class="tag">QUIZ</span><div class="stat">${accuracy}%</div><p>Current quiz accuracy</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div><div class="card"><span class="tag">REPETITION</span><div class="stat">${state.wrong.length}</div><p>Questions marked for repetition</p></div><div class="card"><span class="tag">FLASHCARDS</span><div class="stat">${hard}</div><p>Cards rated Hard</p></div><div class="card"><span class="tag">GAMES</span><div class="stat">${state.gamesPlayed}</div><p>Game rounds played</p></div></div>`}
 
-/* ---------- ADMIN ---------- */
-function admin(){app.innerHTML=shell('Admin','Private content management for STUPIDIFICATION. Sign in to manage the literature database.');app.innerHTML+=`<div id="adminRoot"></div>`;renderAdmin()}
+/* ---------- ADMIN CMS ---------- */
+let adminEditId=null;
+let adminTabName='authors';
+
+const adminConfig={
+ authors:{label:'Authors',table:'authors',fields:[
+  ['name','Name','text',true],['birth_year','Birth year','number'],['death_year','Death year','number'],['nationality','Nationality','text'],['biography','Biography','textarea'],['notes','Notes','textarea']
+ ]},
+ works:{label:'Works',table:'works',fields:[
+  ['title','Title','text',true],['author_id','Author','author'],['publication_year','Publication year','number'],['publication_date','Publication date','text'],['genre','Genre','text'],['description','Description','textarea'],['notes','Notes','textarea']
+ ]},
+ characters:{label:'Characters',table:'characters',fields:[
+  ['name','Name','text',true],['work_id','Work','work'],['description','Description','textarea']
+ ]},
+ movements:{label:'Movements',table:'movements',fields:[
+  ['name','Name','text',true],['period','Period','text'],['description','Description','textarea']
+ ]},
+ theorists:{label:'Theorists',table:'theorists',fields:[
+  ['name','Name','text',true],['description','Description','textarea']
+ ]},
+ theories:{label:'Theories',table:'theories',fields:[
+  ['name','Theory name','text',true],['theorist_id','Theorist','theorist'],['description','Description','textarea'],['key_terms','Key terms','textarea']
+ ]},
+ concepts:{label:'Concepts',table:'concepts',fields:[
+  ['name','Name','text',true],['definition','Definition','textarea'],['notes','Notes','textarea']
+ ]},
+ learn_content:{label:'Learn Pages',table:'learn_content',content:true,fields:[
+  ['topic_id','Topic','topic'],['title','Page title','text',true],['body','Page content','textarea',true],['source','Source','text'],['published','Published','checkbox']
+ ]},
+ quiz_questions:{label:'Quiz Questions',table:'quiz_questions',content:true,quiz:true,fields:[
+  ['topic_id','Topic','topic'],['question','Question','textarea',true],['explanation','Explanation','textarea'],['source','Source','text'],['published','Published','checkbox']
+ ]},
+ flashcards:{label:'Flashcards',table:'flashcards',content:true,fields:[
+  ['topic_id','Topic','topic'],['front','Front','text',true],['back','Back','textarea',true],['source','Source','text'],['published','Published','checkbox']
+ ]},
+ game_questions:{label:'Game Questions',table:'game_questions',content:true,fields:[
+  ['topic_id','Topic','topic'],['game_type','Game type','text',true],['prompt','Prompt','textarea',true],['answer','Answer','text',true],['choices','Choices (JSON)','textarea'],['explanation','Explanation','textarea'],['source','Source','text'],['published','Published','checkbox']
+ ]}
+};
+
+function admin(){app.innerHTML=shell('Admin','Private content management for STUPIDIFICATION. Create, edit, publish, unpublish and delete your literature database records.');app.innerHTML+=`<div id="adminRoot"></div>`;renderAdmin()}
+
 async function renderAdmin(){
  const {data:{session}}=await sb.auth.getSession();
  const root=document.querySelector('#adminRoot');
- if(!session){root.innerHTML=`<div class="card" style="max-width:520px;margin:auto"><span class="tag">ADMIN LOGIN</span><h2>Enter the library</h2><p>Use your Supabase account. If this is the first account, you can claim the first admin seat.</p><input class="search" id="email" type="email" placeholder="Email"><input class="search" id="password" type="password" placeholder="Password"><div class="hero-actions"><button class="btn" id="login">Sign in</button><button class="btn secondary" id="signup">Create account</button></div><div id="authMsg"></div></div>`;document.querySelector('#login').onclick=authLogin;document.querySelector('#signup').onclick=authSignup;return}
+ if(!session){
+  root.innerHTML=`<div class="card" style="max-width:520px;margin:auto"><span class="tag">ADMIN LOGIN</span><h2>Enter the library</h2><p>Use your Supabase account. If this is the first account, you can claim the first admin seat.</p><input class="search" id="email" type="email" placeholder="Email"><input class="search" id="password" type="password" placeholder="Password"><div class="hero-actions"><button class="btn" id="login">Sign in</button><button class="btn secondary" id="signup">Create account</button></div><div id="authMsg"></div></div>`;
+  document.querySelector('#login').onclick=authLogin;document.querySelector('#signup').onclick=authSignup;return;
+ }
  const {data:profile}=await sb.from('profiles').select('is_admin,display_name').eq('id',session.user.id).single();
- if(!profile?.is_admin){root.innerHTML=`<div class="empty"><strong>Your account is not an admin yet.</strong><p>If you are the owner and this is the first account, click below to claim the first admin seat.</p><button class="btn" id="claim">Claim first admin</button> <button class="btn secondary" id="logout">Sign out</button><div id="adminMsg"></div></div>`;document.querySelector('#claim').onclick=async()=>{const {data,error}=await sb.rpc('claim_first_admin');document.querySelector('#adminMsg').innerHTML=error?`<p>${esc(error.message)}</p>`:`<p>${data?'Admin access granted. Refreshing…':'No admin seat available.'}</p>`;if(data)setTimeout(renderAdmin,600)};document.querySelector('#logout').onclick=()=>sb.auth.signOut().then(renderAdmin);return}
- root.innerHTML=adminDashboard(session.user);wireAdmin()
+ if(!profile?.is_admin){
+  root.innerHTML=`<div class="empty"><strong>Your account is not an admin yet.</strong><p>If you are the owner and this is the first account, click below to claim the first admin seat.</p><button class="btn" id="claim">Claim first admin</button> <button class="btn secondary" id="logout">Sign out</button><div id="adminMsg"></div></div>`;
+  document.querySelector('#claim').onclick=async()=>{const {data,error}=await sb.rpc('claim_first_admin');document.querySelector('#adminMsg').innerHTML=error?`<p>${esc(error.message)}</p>`:`<p>${data?'Admin access granted. Refreshing…':'No admin seat available.'}</p>`;if(data)setTimeout(renderAdmin,600)};
+  document.querySelector('#logout').onclick=()=>sb.auth.signOut().then(renderAdmin);return;
+ }
+ root.innerHTML=adminDashboard(session.user);wireAdmin();
 }
+
 async function authLogin(){const email=document.querySelector('#email').value,password=document.querySelector('#password').value,msg=document.querySelector('#authMsg');const {error}=await sb.auth.signInWithPassword({email,password});msg.innerHTML=error?`<p>${esc(error.message)}</p>`:'<p>Signed in.</p>';if(!error)renderAdmin()}
 async function authSignup(){const email=document.querySelector('#email').value,password=document.querySelector('#password').value,msg=document.querySelector('#authMsg');const {error}=await sb.auth.signUp({email,password});msg.innerHTML=error?`<p>${esc(error.message)}</p>`:'<p>Account created. If email confirmation is enabled, confirm your email, then sign in.</p>'}
-function adminDashboard(user){return `<div class="card"><div class="section-bar"><div><span class="tag">CONTENT CONTROL</span><h2>Admin dashboard</h2><p>${esc(user.email)}</p></div><button class="btn secondary" id="logout">Sign out</button></div><div class="filters"><button class="btn" data-tab="authors">Authors</button><button class="btn secondary" data-tab="works">Works</button><button class="btn secondary" data-tab="learn">Learn</button><button class="btn secondary" data-tab="quiz">Quiz</button><button class="btn secondary" data-tab="cards">Flashcards</button><button class="btn secondary" data-tab="theories">Theories</button></div><div id="adminPanel"></div></div>`}
-function wireAdmin(){document.querySelector('#logout').onclick=()=>sb.auth.signOut().then(renderAdmin);document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>adminTab(b.dataset.tab));adminTab('authors')}
+
+function adminDashboard(user){
+ const tabs=Object.entries(adminConfig).map(([key,c],i)=>`<button class="btn ${i?'secondary':''}" data-tab="${key}">${c.label}</button>`).join('');
+ return `<div class="card"><div class="section-bar"><div><span class="tag">CONTENT CONTROL</span><h2>Admin dashboard</h2><p>${esc(user.email)}</p></div><button class="btn secondary" id="logout">Sign out</button></div><div class="filters" style="flex-wrap:wrap">${tabs}</div><div id="adminPanel"></div></div>`
+}
+function wireAdmin(){document.querySelector('#logout').onclick=()=>sb.auth.signOut().then(renderAdmin);document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>adminTab(b.dataset.tab));adminTab(adminTabName||'authors')}
+
 async function adminTab(tab){
- const p=document.querySelector('#adminPanel');
- if(tab==='authors')p.innerHTML=crudForm('Author','authors',[['name','Name'],['birth_year','Birth year','number'],['death_year','Death year','number'],['nationality','Nationality'],['biography','Biography','textarea']]);
- else if(tab==='works')p.innerHTML=crudForm('Work','works',[['title','Title'],['publication_year','Publication year','number'],['publication_date','Publication date'],['genre','Genre'],['description','Description','textarea']]);
- else if(tab==='learn')p.innerHTML=crudForm('Learn content','learn_content',[['title','Title'],['body','Body','textarea'],['source','Source'],['published','Published','checkbox']]);
- else if(tab==='quiz')p.innerHTML=crudForm('Quiz question','quiz_questions',[['question','Question','textarea'],['explanation','Explanation','textarea'],['source','Source'],['published','Published','checkbox']]);
- else if(tab==='cards')p.innerHTML=crudForm('Flashcard','flashcards',[['front','Front'],['back','Back','textarea'],['source','Source'],['published','Published','checkbox']]);
- else if(tab==='theories')p.innerHTML=crudForm('Theory','theories',[['name','Theory name'],['description','Description','textarea'],['key_terms','Key terms','textarea']]);
- wireCrud(tab)
+ adminTabName=tab;adminEditId=null;
+ const p=document.querySelector('#adminPanel');const c=adminConfig[tab];if(!c)return;
+ p.innerHTML=`<div class="filters"><span class="tag">${c.label.toUpperCase()}</span><button class="btn" id="newRecord">+ Add new</button></div><div id="adminEditor"></div><div id="adminList"><p>Loading…</p></div>`;
+ document.querySelector('#newRecord').onclick=()=>{adminEditId=null;renderAdminEditor(tab)};
+ await renderAdminList(tab);
 }
-function crudForm(label,table,fields){
- return `<div class="filters"><span class="tag">ADD ${label.toUpperCase()}</span></div><div class="grid">${fields.map(([k,l,type])=>type==='checkbox'?`<label class="card"><input id="f_${k}" type="checkbox"> ${l}</label>`:type==='textarea'?`<textarea class="search" id="f_${k}" rows="5" placeholder="${l}"></textarea>`:`<input class="search" id="f_${k}" type="${type||'text'}" placeholder="${l}">`).join('')}</div><button class="btn" id="saveRecord">Save ${label}</button><div id="crudMsg"></div>`
+
+function relationOptions(type,selected){
+ let arr=[],label='';
+ if(type==='author'){arr=authorsData;label='author';}
+ if(type==='work'){arr=worksData;label='work';}
+ if(type==='theorist'){arr=theoristsData;label='theorist';}
+ if(type==='topic'){arr=topics;label='topic';}
+ return `<select class="search" id="f_${type}_id"><option value="">Select ${label}…</option>${arr.map(x=>`<option value="${x.id}" ${x.id===selected?'selected':''}>${esc(x.name||x.title)}</option>`).join('')}</select>`;
 }
-async function wireCrud(tab){
- const btn=document.querySelector('#saveRecord');if(!btn)return;
- btn.onclick=async()=>{
-  const map={authors:{name:'name',birth_year:'birth_year',death_year:'death_year',nationality:'nationality',biography:'biography'},works:{title:'title',publication_year:'publication_year',publication_date:'publication_date',genre:'genre',description:'description'},learn_content:{title:'title',body:'body',source:'source',published:'published'},quiz_questions:{question:'question',explanation:'explanation',source:'source',published:'published'},flashcards:{front:'front',back:'back',source:'source',published:'published'},theories:{name:'name',description:'description',key_terms:'key_terms'}}[tab];
-  const payload={};Object.entries(map).forEach(([k,col])=>{const el=document.querySelector('#f_'+k);if(el)payload[col]=el.type==='checkbox'?el.checked:(el.value||null)});
-  if(tab==='learn_content'||tab==='quiz_questions'||tab==='flashcards'){const t=topics[0];if(t)payload.topic_id=t.id}
-  const {error}=await sb.from(tab).insert(payload);
-  document.querySelector('#crudMsg').innerHTML=error?`<p>${esc(error.message)}</p>`:'<p>Saved. The record is now in Supabase.</p>';
-  await loadData()
+
+function fieldHtml(field,value){
+ const [k,label,type,required]=field;
+ if(type==='checkbox')return `<label class="card" style="padding:14px"><input id="f_${k}" type="checkbox" ${value?'checked':''}> ${label}</label>`;
+ if(['author','work','theorist','topic'].includes(type))return relationOptions(type,value);
+ if(type==='textarea')return `<textarea class="search" id="f_${k}" rows="6" placeholder="${label}" ${required?'required':''}>${esc(value||'')}</textarea>`;
+ return `<input class="search" id="f_${k}" type="${type||'text'}" placeholder="${label}" value="${esc(value||'')}" ${required?'required':''}>`;
+}
+
+async function renderAdminEditor(tab,record=null){
+ const c=adminConfig[tab],editor=document.querySelector('#adminEditor');if(!editor)return;
+ let optionsHtml='';
+ if(c.quiz){
+  const existing=record?.quiz_options||[];
+  optionsHtml=`<div class="card"><span class="tag">ANSWER OPTIONS</span><p>Enter four options and mark the correct answer.</p>${[0,1,2,3].map(i=>{const o=existing[i]?.option_text||'';return `<div style="display:flex;gap:10px;align-items:center;margin:10px 0"><input class="search" id="qopt_${i}" placeholder="Option ${i+1}" value="${esc(o)}"><label><input type="radio" name="correctOpt" value="${i}" ${existing[i]?.is_correct?'checked':''}> Correct</label></div>`}).join('')}</div>`;
  }
+ editor.innerHTML=`<div class="card"><div class="section-bar"><div><span class="tag">${record?'EDIT':'NEW'} ${c.label.toUpperCase()}</span><h2>${record?'Edit record':'Add record'}</h2></div>${record?'<button class="btn secondary" id="cancelEdit">Cancel</button>':''}</div><div class="grid">${c.fields.map(f=>fieldHtml(f,record?.[f[0]])).join('')}</div>${optionsHtml}<button class="btn" id="saveAdminRecord">${record?'Save changes':'Create record'}</button><div id="adminFormMsg"></div></div>`;
+ if(record)document.querySelector('#cancelEdit').onclick=()=>{adminEditId=null;renderAdminEditor(tab)};
+ document.querySelector('#saveAdminRecord').onclick=()=>saveAdminRecord(tab,record?.id||null);
+}
+
+function recordLabel(tab,r){
+ if(tab==='works')return `${r.title}${r.authors?.name?' · '+r.authors.name:''}`;
+ if(tab==='characters')return `${r.name}${r.works?.title?' · '+r.works.title:''}`;
+ if(tab==='theories')return `${r.name}${r.theorists?.name?' · '+r.theorists.name:''}`;
+ if(tab==='learn_content'||tab==='quiz_questions'||tab==='flashcards'||tab==='game_questions')return r.title||r.question||r.front||r.prompt||'Untitled';
+ return r.name||'Untitled';
+}
+
+function statusBadge(r){if(!('published' in r))return '';return `<span class="tag" style="margin-left:8px">${r.published?'PUBLISHED':'DRAFT'}</span>`}
+
+async function renderAdminList(tab){
+ const c=adminConfig[tab],list=document.querySelector('#adminList');if(!list)return;
+ let query;
+ if(tab==='works')query=sb.from('works').select('*, authors(name)').order('title');
+ else if(tab==='characters')query=sb.from('characters').select('*, works(title)').order('name');
+ else if(tab==='theories')query=sb.from('theories').select('*, theorists(name)').order('name');
+ else if(tab==='learn_content')query=sb.from('learn_content').select('*').order('created_at',{ascending:false});
+ else if(tab==='quiz_questions')query=sb.from('quiz_questions').select('*, quiz_options(*)').order('created_at',{ascending:false});
+ else query=sb.from(c.table).select('*').order('created_at',{ascending:false});
+ const {data,error}=await query;
+ if(error){list.innerHTML=`<div class="empty"><strong>Could not load records.</strong><p>${esc(error.message)}</p></div>`;return}
+ const rows=data||[];
+ if(!rows.length){list.innerHTML=`<div class="empty"><strong>No records yet.</strong><p>Use “+ Add new” to create the first ${esc(c.label.toLowerCase())}.</p></div>`;return}
+ list.innerHTML=`<div class="card"><input class="search" id="adminSearch" placeholder="Search ${esc(c.label.toLowerCase())}…"><div id="recordRows"></div></div>`;
+ const draw=()=>{const q=(document.querySelector('#adminSearch')?.value||'').toLowerCase();const filtered=rows.filter(r=>JSON.stringify(r).toLowerCase().includes(q));document.querySelector('#recordRows').innerHTML=filtered.length?filtered.map(r=>`<div class="section-bar" style="padding:16px 0;border-bottom:1px solid rgba(0,0,0,.08)"><div><strong>${esc(recordLabel(tab,r))}</strong>${statusBadge(r)}<p style="margin:5px 0 0;opacity:.7">${esc(r.source||r.description||r.definition||r.body||r.explanation||'')}</p></div><div class="hero-actions" style="margin:0;display:flex;gap:6px;flex-wrap:wrap"><button class="btn secondary" data-edit="${r.id}">Edit</button>${'published' in r?`<button class="btn secondary" data-publish="${r.id}">${r.published?'Unpublish':'Publish'}</button>`:''}<button class="btn secondary" data-delete="${r.id}">Delete</button></div></div>`).join(''):`<div class="empty">No matching records.</div>`;wireAdminRowButtons(tab,rows)};
+ document.querySelector('#adminSearch').oninput=draw;draw();
+}
+
+function wireAdminRowButtons(tab,rows){
+ document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{const r=rows.find(x=>x.id===b.dataset.edit);adminEditId=r.id;renderAdminEditor(tab,r);window.scrollTo({top:document.querySelector('#adminEditor').getBoundingClientRect().top+window.scrollY-80,behavior:'smooth'})});
+ document.querySelectorAll('[data-publish]').forEach(b=>b.onclick=async()=>{const r=rows.find(x=>x.id===b.dataset.publish);const {error}=await sb.from(adminConfig[tab].table).update({published:!r.published}).eq('id',r.id);if(error)alert(error.message);else{await refreshAdminData(tab)}});
+ document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=async()=>{const r=rows.find(x=>x.id===b.dataset.delete);if(!confirm(`Delete “${recordLabel(tab,r)}”? This cannot be undone.`))return;const ok=await deleteAdminRecord(tab,r.id);if(ok)await refreshAdminData(tab)});
+}
+
+async function deleteAdminRecord(tab,id){
+ try{
+  if(tab==='quiz_questions'){
+   const {error:e1}=await sb.from('quiz_options').delete().eq('question_id',id);if(e1)throw e1;
+  }
+  if(tab==='works'){
+   const {error:e2}=await sb.from('characters').delete().eq('work_id',id);if(e2)throw e2;
+  }
+  const {error}=await sb.from(adminConfig[tab].table).delete().eq('id',id);if(error)throw error;
+  return true;
+ }catch(e){alert(`Could not delete this record. ${e.message||e}`);return false}
+}
+
+async function refreshAdminData(tab){await loadData();await renderAdminList(tab)}
+
+async function saveAdminRecord(tab,id){
+ const c=adminConfig[tab],msg=document.querySelector('#adminFormMsg');const payload={};
+ for(const [k,label,type,required] of c.fields){const el=document.querySelector('#f_'+k);if(!el)continue;if(required && !el.value?.trim() && type!=='checkbox'){msg.innerHTML=`<p>Please fill in ${esc(label)}.</p>`;return}if(['author','work','theorist','topic'].includes(type))payload[k]=el.value||null;else if(type==='checkbox')payload[k]=el.checked;else payload[k]=el.value||null}
+ if(tab==='game_questions' && payload.choices){try{payload.choices=JSON.parse(payload.choices)}catch(e){msg.innerHTML='<p>Choices must be valid JSON, for example ["A","B","C","D"].</p>';return}}
+ let recordId=id;
+ let result=id?await sb.from(c.table).update(payload).eq('id',id).select().single():await sb.from(c.table).insert(payload).select().single();
+ if(result.error){msg.innerHTML=`<p>${esc(result.error.message)}</p>`;return}
+ recordId=result.data.id;
+ if(c.quiz){
+  const options=[0,1,2,3].map(i=>({option_text:(document.querySelector('#qopt_'+i)?.value||'').trim(),is_correct:document.querySelector(`input[name="correctOpt"][value="${i}"]`)?.checked||false,sort_order:i})).filter(x=>x.option_text);
+  if(options.length!==4||options.filter(x=>x.is_correct).length!==1){msg.innerHTML='<p>A quiz question needs exactly four options and exactly one correct answer.</p>';if(!id)await sb.from(c.table).delete().eq('id',recordId);return}
+  const {error:delError}=await sb.from('quiz_options').delete().eq('question_id',recordId);if(delError){msg.innerHTML=`<p>${esc(delError.message)}</p>`;return}
+  const {error:optError}=await sb.from('quiz_options').insert(options.map(x=>({...x,question_id:recordId})));if(optError){msg.innerHTML=`<p>${esc(optError.message)}</p>`;return}
+ }
+ msg.innerHTML=`<p>${id?'Changes saved.':'Record created.'}</p>`;adminEditId=null;await refreshAdminData(tab);renderAdminEditor(tab);
 }
 
 /* ---------- ROUTING ----------
