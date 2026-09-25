@@ -155,13 +155,13 @@ function renderQuiz(topicId){
   quizTimer=setInterval(()=>{const boxes=document.querySelectorAll(".quiz-stat strong");if(boxes[2])boxes[2].textContent=timerText(quizStarted)},1000);
   document.querySelectorAll(".option").forEach(b=>b.onclick=()=>answerQuiz(b,q,topicId));
 }
-async function answerQuiz(btn,q,topicId){
+function answerQuiz(btn,q,topicId){
   if(!quizTimer)return;
   stopTimer("quiz");
   const correct=btn.dataset.answer===q.answer;
   if(correct){quizStats.right++;state.quizCorrect++}else{quizStats.wrong++;if(!state.wrongIds.includes(q.id))state.wrongIds.push(q.id)}
   state.quizAttempts++;save();syncCloudProgress();
-  if(currentUser){const selected=q.optionRows?.find(o=>o.option_text===btn.dataset.answer);await sb.from("user_quiz_attempts").insert({user_id:currentUser.id,question_id:q.id,selected_option_id:selected?.id||null,is_correct:correct});await syncCloudProgress()}
+  if(currentUser){const selected=q.optionRows?.find(o=>o.option_text===btn.dataset.answer);sb.from("user_quiz_attempts").insert({user_id:currentUser.id,question_id:q.id,selected_option_id:selected?.id||null,is_correct:correct})}
   document.querySelectorAll(".option").forEach(b=>{b.disabled=true;if(b.dataset.answer===q.answer)b.classList.add("correct")});
   if(!correct)btn.classList.add("wrong");
   const feedback=document.querySelector("#quizFeedback");
@@ -175,11 +175,11 @@ function nextQuiz(topicId,hard){
   quizPos++;
   if(quizPos>=quizDeck.length)finishQuiz(topicId);else renderQuiz(topicId);
 }
-async function finishQuiz(topicId){
+function finishQuiz(topicId){
   stopTimer("quiz");
   const total=quizStats.right+quizStats.wrong,accuracy=total?Math.round(quizStats.right/total*100):0;
   const topic=topics.find(t=>t.id===topicId);
-  state.quizRounds=(state.quizRounds||0)+1;save();await syncCloudProgress();
+  state.quizRounds=(state.quizRounds||0)+1;save();syncCloudProgress();
   app.innerHTML=shell("Quiz complete",topic?.name||"Round");
   app.innerHTML+=`<div class="completion"><span class="tag">ROUND COMPLETE</span><h2>You finished the deck.</h2>
     <div class="completion-stats">${statBox("RIGHT",quizStats.right,"right")}${statBox("WRONG",quizStats.wrong,"wrong")}<div><strong>${accuracy}%</strong><span>Accuracy</span></div></div>
@@ -220,7 +220,7 @@ function addRatings(c){
   const div=document.createElement("div");div.id="cardRatings";div.className="rating-row center";
   div.innerHTML=`<button class="rating" data-r="hard">Hard · again</button><button class="rating" data-r="good">Good</button><button class="rating" data-r="easy">Easy</button>`;
   document.querySelector(".flashcard").after(div);
-  div.querySelectorAll("button").forEach(b=>b.onclick=async()=>{state.cardRatings[c.id]=b.dataset.r;state.flashcardsReviewed=(state.flashcardsReviewed||0)+1;save();if(currentUser){const reps=(b.dataset.r==="hard"?0:1);await sb.from("user_flashcard_progress").upsert({user_id:currentUser.id,flashcard_id:c.id,rating:b.dataset.r,repetitions:reps,updated_at:new Date().toISOString()});await syncCloudProgress()}cardPos++;if(cardPos>=cardDeck.length)startCards(cardTopic.id);else renderCard()});
+  div.querySelectorAll("button").forEach(b=>b.onclick=()=>{state.cardRatings[c.id]=b.dataset.r;state.flashcardsReviewed=(state.flashcardsReviewed||0)+1;save();syncCloudProgress();if(currentUser){const reps=(b.dataset.r==="hard"?0:1);sb.from("user_flashcard_progress").upsert({user_id:currentUser.id,flashcard_id:c.id,rating:b.dataset.r,repetitions:reps,updated_at:new Date().toISOString()})}cardPos++;if(cardPos>=cardDeck.length)startCards(cardTopic.id);else renderCard()});
 }
 
 /* GAMES */
@@ -275,9 +275,9 @@ function answerGame(btn,q,kind){
   document.querySelector("#gameEasy").onclick=()=>nextGame(kind,false);document.querySelector("#gameHard").onclick=()=>nextGame(kind,true);
 }
 function nextGame(kind,hard){if(hard)gameDeck.push(gameDeck[gamePos]);gamePos++;if(gamePos>=gameDeck.length)finishGame(kind);else renderGame(kind)}
-async function finishGame(kind){
+function finishGame(kind){
   stopTimer("game");const total=gameStats.right+gameStats.wrong,accuracy=total?Math.round(gameStats.right/total*100):0;
-  state.gamesPlayed++;save();if(currentUser){await sb.from("user_game_history").insert({user_id:currentUser.id,game_type:kind,score:gameStats.right,total:gameStats.right+gameStats.wrong});await syncCloudProgress()}
+  state.gamesPlayed++;save();syncCloudProgress();if(currentUser){sb.from("user_game_history").insert({user_id:currentUser.id,game_type:kind,score:gameStats.right,total:gameStats.right+gameStats.wrong})}
   app.innerHTML=shell("Game complete",kind);
   app.innerHTML+=`<div class="completion"><span class="tag">ROUND COMPLETE</span><h2>Nice. Round finished.</h2><div class="completion-stats">${statBox("RIGHT",gameStats.right,"right")}${statBox("WRONG",gameStats.wrong,"wrong")}<div><strong>${accuracy}%</strong><span>Accuracy</span></div></div><button class="btn" id="playAgain">Play again</button></div>`;
   document.querySelector("#playAgain").onclick=()=>startGame(kind);
@@ -358,11 +358,10 @@ async function syncCloudProgress(){
 
 async function loadCloudProgress(){
   if(!currentUser)return;
-  const [{data},{data:attempts},{data:flashProgress},{data:gameHistory}]=await Promise.all([
+  const [{data},{data:attempts},{data:flashProgress}]=await Promise.all([
     sb.from("user_progress").select("accuracy,quizzes_completed,flashcards_reviewed,games_played").eq("user_id",currentUser.id).maybeSingle(),
     sb.from("user_quiz_attempts").select("is_correct,question_id").eq("user_id",currentUser.id),
-    sb.from("user_flashcard_progress").select("flashcard_id,rating").eq("user_id",currentUser.id),
-    sb.from("user_game_history").select("id,game_type,score,total,created_at").eq("user_id",currentUser.id).order("created_at",{ascending:false})
+    sb.from("user_flashcard_progress").select("flashcard_id,rating").eq("user_id",currentUser.id)
   ]);
   if(data){
     state.quizRounds=Math.max(state.quizRounds||0,data.quizzes_completed||0);
@@ -374,8 +373,6 @@ async function loadCloudProgress(){
     state.quizCorrect=Math.max(state.quizCorrect||0,attempts.filter(x=>x.is_correct).length);
   }
   if(flashProgress){flashProgress.forEach(x=>{state.cardRatings[x.flashcard_id]=x.rating})}
-  if(gameHistory){state.gamesPlayed=Math.max(state.gamesPlayed||0,gameHistory.length)}
-  save();
 }
 
 async function profile(){
@@ -391,17 +388,10 @@ async function profile(){
   await loadCloudProgress();
   const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
   const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
-  const answered=Math.max(0,state.quizAttempts||0);
-  const practiceScore=Math.min(100,Math.round((Math.min(answered,50)/50)*60 + (Math.min(state.flashcardsReviewed||0,50)/50)*20 + (Math.min(state.gamesPlayed||0,25)/25)*20));
   app.innerHTML=shell("Profile","Your STUPIDIFICATION study account and saved progress.");
-  app.innerHTML+=`<div class="profile-progress-hero">
-    <div class="profile-progress-copy"><span class="tag">YOUR STUDY MOMENTUM</span><h2>${practiceScore>=80?"You’re in the zone.":practiceScore>=45?"You’re building momentum.":"Let’s get started."}</h2><p>Every quiz answer, flashcard review and completed game round adds to this little snapshot of your practice.</p></div>
-    <div class="progress-orb" style="--progress:${practiceScore}%"><div><strong>${practiceScore}%</strong><span>practice</span></div></div>
-  </div>
-  <div class="profile-grid">
+  app.innerHTML+=`<div class="profile-grid">
     <div class="card profile-main"><div class="profile-avatar">${esc((currentProfile?.display_name||user.email||"S").charAt(0).toUpperCase())}</div><span class="tag">STUDENT ACCOUNT</span><h2 class="profile-name">${esc(currentProfile?.display_name||"Student")}</h2><p class="profile-email">${esc(user.email||"")}</p><button class="btn secondary" id="logoutBtn">Sign out</button></div>
     <div class="card profile-stat"><span class="tag">QUIZ ACCURACY</span><div class="big-stat">${accuracy}%</div><p>${state.quizCorrect} correct out of ${state.quizAttempts} answered.</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div>
-    <div class="card profile-stat"><span class="tag">QUESTIONS ANSWERED</span><div class="big-stat">${answered}</div><p>Total quiz answers recorded.</p></div>
     <div class="card profile-stat"><span class="tag">QUIZ ROUNDS</span><div class="big-stat">${state.quizRounds||0}</div><p>Completed quiz rounds.</p></div>
     <div class="card profile-stat"><span class="tag">FLASHCARDS</span><div class="big-stat">${state.flashcardsReviewed||0}</div><p>Cards reviewed · ${hard} currently Hard.</p></div>
     <div class="card profile-stat"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed||0}</div><p>Game rounds completed.</p></div>
