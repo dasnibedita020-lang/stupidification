@@ -160,7 +160,8 @@ async function answerQuiz(btn,q,topicId){
   stopTimer("quiz");
   const correct=btn.dataset.answer===q.answer;
   if(correct){quizStats.right++;state.quizCorrect++}else{quizStats.wrong++;if(!state.wrongIds.includes(q.id))state.wrongIds.push(q.id)}
-  state.quizAttempts++;save();
+  state.quizAttempts++;save();syncCloudProgress();
+  if(currentUser){const selected=q.optionRows?.find(o=>o.option_text===btn.dataset.answer);await sb.from("user_quiz_attempts").insert({user_id:currentUser.id,question_id:q.id,selected_option_id:selected?.id||null,is_correct:correct});await syncCloudProgress()}
   document.querySelectorAll(".option").forEach(b=>{b.disabled=true;if(b.dataset.answer===q.answer)b.classList.add("correct")});
   if(!correct)btn.classList.add("wrong");
   const feedback=document.querySelector("#quizFeedback");
@@ -178,7 +179,7 @@ async function finishQuiz(topicId){
   stopTimer("quiz");
   const total=quizStats.right+quizStats.wrong,accuracy=total?Math.round(quizStats.right/total*100):0;
   const topic=topics.find(t=>t.id===topicId);
-  state.quizRounds=(state.quizRounds||0)+1;save();
+  state.quizRounds=(state.quizRounds||0)+1;save();await syncCloudProgress();
   app.innerHTML=shell("Quiz complete",topic?.name||"Round");
   app.innerHTML+=`<div class="completion"><span class="tag">ROUND COMPLETE</span><h2>You finished the deck.</h2>
     <div class="completion-stats">${statBox("RIGHT",quizStats.right,"right")}${statBox("WRONG",quizStats.wrong,"wrong")}<div><strong>${accuracy}%</strong><span>Accuracy</span></div></div>
@@ -219,68 +220,72 @@ function addRatings(c){
   const div=document.createElement("div");div.id="cardRatings";div.className="rating-row center";
   div.innerHTML=`<button class="rating" data-r="hard">Hard · again</button><button class="rating" data-r="good">Good</button><button class="rating" data-r="easy">Easy</button>`;
   document.querySelector(".flashcard").after(div);
-  div.querySelectorAll("button").forEach(b=>b.onclick=async()=>{state.cardRatings[c.id]=b.dataset.r;state.flashcardsReviewed=(state.flashcardsReviewed||0)+1;save();cardPos++;if(cardPos>=cardDeck.length)startCards(cardTopic.id);else renderCard()});
+  div.querySelectorAll("button").forEach(b=>b.onclick=async()=>{state.cardRatings[c.id]=b.dataset.r;state.flashcardsReviewed=(state.flashcardsReviewed||0)+1;save();if(currentUser){const reps=(b.dataset.r==="hard"?0:1);await sb.from("user_flashcard_progress").upsert({user_id:currentUser.id,flashcard_id:c.id,rating:b.dataset.r,repetitions:reps,updated_at:new Date().toISOString()});await syncCloudProgress()}cardPos++;if(cardPos>=cardDeck.length)startCards(cardTopic.id);else renderCard()});
 }
 
 /* GAMES */
-function games(){
-  app.innerHTML=shell("Games","Every game uses an adaptive deck. Hard questions return later; Easy questions leave the deck.");
-  app.innerHTML+=`<div class="grid">
-    ${feature("MATCH","Author → Work","Given an author, identify a work.","#game-author_work")}
-    ${feature("MATCH","Work → Author","Given a work, identify its author.","#game-work_author")}
-    ${feature("DATE","Work → Date","Given a work, identify its date.","#game-work_date")}
-    ${feature("DATE","Author → Work + Date","Match an author to the correct work and date.","#game-author_work_date")}
-    ${feature("MOVE","Movement → Writer","Given a movement, identify a writer.","#game-movement_writer")}
-    ${feature("MOVE","Writer → Movement","Given a writer, identify the movement.","#game-writer_movement")}
-    ${feature("ORDER","Chronology","Put works in chronological order.","#game-chronology")}
-    ${feature("PERIOD","Victorian vs Modernist","Identify the literary period.","#game-period_classification")}
-    ${feature("CLUES","Who Am I?","Identify the writer from clues.","#game-who_am_i")}
-    ${feature("BRUTAL","Full Stupidification","Mix writer, work, date and movement.","#game-full_stupidification")}
-    ${feature("MATCH","Character ↔ Work","Connect a character to its work.","#game-character_work")}
-    ${feature("THEORY","Theory ↔ Theorist","Identify the thinker associated with a theory.","#game-theory")}
-  </div>`;
+let selectedGameScope={module:"",topic:"",author:"",game:""};
+function gameScopeOptions(){
+  const moduleRows=[{id:"",name:"All Modules"},...modules.map(x=>({id:x.id,name:x.name}))];
+  const topicRows=[{id:"",name:"All Topics / Ages"},...topics.filter(t=>!selectedGameScope.module||t.module_id===selectedGameScope.module).map(x=>({id:x.id,name:x.name}))];
+  const allowedTopicIds=new Set(topicRows.map(x=>x.id));
+  if(selectedGameScope.topic&&!allowedTopicIds.has(selectedGameScope.topic))selectedGameScope.topic="";
+  const authorIds=new Set((gameQuestions||[]).filter(q=>{
+    if(!q.author_id)return false;
+    if(selectedGameScope.topic&&q.topic_id!==selectedGameScope.topic)return false;
+    if(selectedGameScope.module&&q.module_id&&q.module_id!==selectedGameScope.module)return false;
+    return true;
+  }).map(q=>q.author_id));
+  const authorRows=[{id:"",name:"All Authors"},...authors.filter(a=>!authorIds.size||authorIds.has(a.id)).map(x=>({id:x.id,name:x.name}))];
+  return {moduleRows,topicRows,authorRows};
 }
-function buildTheoryQuestions(){
-  return shuffle(theories.filter(t=>t.theorists?.name)).map((t,i)=>{
-    const correct=t.theorists.name;
-    const distractors=shuffle(theorists.filter(x=>x.name!==correct)).slice(0,3).map(x=>x.name);
-    return {id:`theory-${i}`,game_type:"theory",prompt:`Who is associated with the theory "${t.name}"?`,answer:correct,choices:shuffle([correct,...distractors]),explanation:t.description||""};
-  });
+function gameScopeSelect(id,label,value,items){
+  const current=items.find(x=>x.id===value)||items[0];
+  return `<div class="game-scope-select"><span>${esc(label)}</span><button type="button" class="game-scope-trigger" data-menu="${id}"><strong>${esc(current?.name||"All")}</strong><span>⌄</span></button><div class="game-scope-menu" id="${id}">${items.map(x=>`<button type="button" data-value="${esc(x.id)}">${esc(x.name)}</button>`).join("")}</div></div>`;
 }
-function startGame(kind){
+function bindGameScope(){
+  document.querySelectorAll(".game-scope-trigger").forEach(b=>b.onclick=e=>{e.stopPropagation();document.querySelectorAll(".game-scope-menu.open").forEach(x=>{if(x.id!==b.dataset.menu)x.classList.remove("open")});document.getElementById(b.dataset.menu)?.classList.toggle("open")});
+  document.querySelectorAll(".game-scope-menu button").forEach(b=>b.onclick=()=>{const id=b.parentElement.id;const value=b.dataset.value;if(id==="gameModuleMenu")selectedGameScope.module=value;else if(id==="gameTopicMenu")selectedGameScope.topic=value;else if(id==="gameAuthorMenu")selectedGameScope.author=value;renderGamesScope()});
+  document.addEventListener("click",closeGameMenus,{once:true});
+}
+function closeGameMenus(){document.querySelectorAll(".game-scope-menu.open").forEach(x=>x.classList.remove("open"))}
+function renderGamesScope(){
+  const {moduleRows,topicRows,authorRows}=gameScopeOptions();
+  const selectedGame=selectedGameScope.game;
+  const gameLabels={author_work:"Author ↔ Work",work_author:"Work ↔ Author",work_date:"Work ↔ Date",author_work_date:"Author → Work + Date",movement_writer:"Movement → Writer",writer_movement:"Writer → Movement",chronology:"Chronology",period_classification:"Victorian vs Modernist",who_am_i:"Who Am I?",full_stupidification:"Full Stupidification",character_work:"Character ↔ Work",theory:"Theory ↔ Theorist"};
+  app.innerHTML=shell("Games","Choose only what you want to practise. Nothing here is mandatory — you can narrow by module, topic/age, author, or leave everything open.");
+  app.innerHTML+=`<div class="game-scope-card"><div class="game-scope-heading"><div><span class="tag">OPTIONAL FILTERS</span><h2>Build your practice pool.</h2></div><button class="clear-game-scope" id="clearGameScope">Clear</button></div><div class="game-scope-grid">${gameScopeSelect("gameModuleMenu","Module",selectedGameScope.module,moduleRows).replace('game-scope-menu" id="gameModuleMenu"','game-scope-menu" id="gameModuleMenu"')} ${gameScopeSelect("gameTopicMenu","Topic / Age",selectedGameScope.topic,topicRows)} ${gameScopeSelect("gameAuthorMenu","Author",selectedGameScope.author,authorRows)}</div><div class="game-scope-summary"><span>${selectedGameScope.module?esc(moduleRows.find(x=>x.id===selectedGameScope.module)?.name):"All modules"}</span><span>${selectedGameScope.topic?esc(topicRows.find(x=>x.id===selectedGameScope.topic)?.name):"All topics"}</span><span>${selectedGameScope.author?esc(authorRows.find(x=>x.id===selectedGameScope.author)?.name):"All authors"}</span></div></div>`;
+  app.innerHTML+=`<div class="game-choice-card"><div class="game-scope-heading"><div><span class="tag">GAME TYPE</span><h2>What do you want to play?</h2></div></div><div class="game-choice-grid">${[
+    ["author_work","Author ↔ Work","Match writers with their works."],["work_author","Work ↔ Author","Identify the writer from a work."],["work_date","Work ↔ Date","Test publication dates."],["author_work_date","Author → Work + Date","Connect writer, work and date."],["chronology","Chronology","Arrange works in the correct order."],["movement_writer","Movement → Writer","Connect literary movements with writers."],["writer_movement","Writer → Movement","Identify a writer's movement."],["who_am_i","Who Am I?","Identify the writer from clues."],["full_stupidification","Full Stupidification","Mix author, work, date and movement."],["character_work","Character ↔ Work","Connect characters with works."],["theory","Theory ↔ Theorist","Connect theories and theorists."]
+  ].map(([k,t,d])=>`<button type="button" class="game-choice ${selectedGame===k?'selected':''}" data-game="${k}"><strong>${t}</strong><span>${d}</span></button>`).join("")}</div><div class="game-start-row"><div id="gameScopeNote">${selectedGame?`Ready: <strong>${esc(gameLabels[selectedGame])}</strong> · ${selectedGameScope.author?esc(authorRows.find(x=>x.id===selectedGameScope.author)?.name):"all authors"}.`:"Choose a game to begin."}</div><button class="btn" id="startSelectedGame" ${selectedGame?"":"disabled"}>Start Game →</button></div></div>`;
+  bindGameScope();
+  document.querySelectorAll(".game-choice").forEach(b=>b.onclick=()=>{selectedGameScope.game=b.dataset.game;renderGamesScope()});
+  document.querySelector("#clearGameScope").onclick=()=>{selectedGameScope={module:"",topic:"",author:"",game:selectedGame};renderGamesScope()};
+  document.querySelector("#startSelectedGame").onclick=()=>startGame(selectedGameScope.game,{...selectedGameScope});
+}
+function games(){selectedGameScope={module:"",topic:"",author:"",game:""};renderGamesScope()}
+function buildTheoryQuestions(){return shuffle(theories.filter(t=>t.theorists?.name)).map((t,i)=>{const correct=t.theorists.name;const distractors=shuffle(theorists.filter(x=>x.name!==correct)).slice(0,3).map(x=>x.name);return {id:`theory-${i}`,game_type:"theory",prompt:`Who is associated with the theory "${t.name}"?`,answer:correct,choices:shuffle([correct,...distractors]),explanation:t.description||""}})}
+function startGame(kind,scope={}){
   stopTimer("game");gameStats={right:0,wrong:0};gamePos=0;
-  let pool=gameQuestions.filter(q=>q.game_type===kind);
-  if(kind==="theory"&&!pool.length)pool=buildTheoryQuestions();
-  gameDeck=shuffle(pool);renderGame(kind);
+  let pool=kind==="theory"?buildTheoryQuestions():gameQuestions.filter(q=>q.game_type===kind);
+  if(scope.module)pool=pool.filter(q=>q.module_id===scope.module || (!q.module_id&&topics.find(t=>t.id===q.topic_id)?.module_id===scope.module));
+  if(scope.topic)pool=pool.filter(q=>q.topic_id===scope.topic);
+  if(scope.author)pool=pool.filter(q=>q.author_id===scope.author);
+  gameDeck=shuffle(pool);renderGame(kind,scope);
 }
-function renderGame(kind){
-  const labels={author_work:"Author → Work",work_author:"Work → Author",work_date:"Work → Date",author_work_date:"Author → Work + Date",movement_writer:"Movement → Writer",writer_movement:"Writer → Movement",chronology:"Chronology",period_classification:"Victorian vs Modernist",who_am_i:"Who Am I?",full_stupidification:"Full Stupidification",character_work:"Character ↔ Work",theory:"Theory ↔ Theorist"};
-  if(!gameDeck.length){app.innerHTML=shell(labels[kind]||"Game","Game");app.innerHTML+=`<div class="empty">No published game questions are available yet.</div>`;return}
+function renderGame(kind,scope={}){
+  const labels={author_work:"Author ↔ Work",work_author:"Work ↔ Author",work_date:"Work ↔ Date",author_work_date:"Author → Work + Date",movement_writer:"Movement → Writer",writer_movement:"Writer → Movement",chronology:"Chronology",period_classification:"Victorian vs Modernist",who_am_i:"Who Am I?",full_stupidification:"Full Stupidification",character_work:"Character ↔ Work",theory:"Theory ↔ Theorist"};
+  const scopeText=[scope.module?modules.find(x=>x.id===scope.module)?.name:"All modules",scope.topic?topics.find(x=>x.id===scope.topic)?.name:"All topics",scope.author?authors.find(x=>x.id===scope.author)?.name:"All authors"].join(" · ");
+  if(!gameDeck.length){app.innerHTML=shell(labels[kind]||"Game","No questions match this selection yet.");app.innerHTML+=`<div class="empty"><strong>No published questions in this pool.</strong><p>Try a broader selection, or add more game questions from the Admin dashboard.</p><a class="btn secondary" href="#games">Change selection</a></div>`;return}
   const q=gameDeck[gamePos],choices=Array.isArray(q.choices)?shuffle(q.choices):[];
-  app.innerHTML=shell(labels[kind]||"Game","Answer, read the explanation, then decide whether the question is Easy or Hard.");
-  app.innerHTML+=`<div class="quiz-wrap"><div class="quiz-dashboard">${statBox("RIGHT",gameStats.right,"right")}${statBox("WRONG",gameStats.wrong,"wrong")}${statBox("TIME","0s")}</div>
-    <div class="quiz-meta"><span>Question ${gamePos+1}</span><span>${gameDeck.length} in current deck</span></div>
-    <h2 class="quiz-question">${esc(q.prompt||q.question||"")}</h2>
-    <div class="options">${choices.map(o=>`<button class="option" data-answer="${esc(o)}">${esc(o)}</button>`).join("")}</div><div id="gameFeedback"></div></div>`;
+  app.innerHTML=shell(labels[kind]||"Game",`<span class="game-running-scope">${esc(scopeText)}</span>`);
+  app.innerHTML+=`<div class="quiz-wrap"><div class="quiz-dashboard">${statBox("RIGHT",gameStats.right,"right")}${statBox("WRONG",gameStats.wrong,"wrong")}${statBox("TIME","0s")}</div><div class="quiz-meta"><span>Question ${gamePos+1}</span><span>${gameDeck.length} in current deck</span></div><h2 class="quiz-question">${esc(q.prompt||q.question||"")}</h2><div class="options">${choices.map(o=>`<button class="option" data-answer="${esc(o)}">${esc(o)}</button>`).join("")}</div><div id="gameFeedback"></div></div>`;
   gameStarted=Date.now();gameTimer=setInterval(()=>{const boxes=document.querySelectorAll(".quiz-stat strong");if(boxes[2])boxes[2].textContent=timerText(gameStarted)},1000);
-  document.querySelectorAll(".option").forEach(b=>b.onclick=()=>answerGame(b,q,kind));
+  document.querySelectorAll(".option").forEach(b=>b.onclick=()=>answerGame(b,q,kind,scope));
 }
-function answerGame(btn,q,kind){
-  if(!gameTimer)return;stopTimer("game");
-  const correct=btn.dataset.answer===q.answer;if(correct)gameStats.right++;else gameStats.wrong++;
-  document.querySelectorAll(".option").forEach(b=>{b.disabled=true;if(b.dataset.answer===q.answer)b.classList.add("correct")});if(!correct)btn.classList.add("wrong");
-  document.querySelector("#gameFeedback").innerHTML=`<div class="feedback"><strong>${correct?"✓ Correct":"✗ Not quite"}</strong><p>${esc(q.explanation||"")}</p>
-    <div class="rating-row"><button class="rating" id="gameEasy">Easy · next</button><button class="rating" id="gameHard">Hard · repeat later</button></div></div>`;
-  document.querySelector("#gameEasy").onclick=()=>nextGame(kind,false);document.querySelector("#gameHard").onclick=()=>nextGame(kind,true);
-}
-function nextGame(kind,hard){if(hard)gameDeck.push(gameDeck[gamePos]);gamePos++;if(gamePos>=gameDeck.length)finishGame(kind);else renderGame(kind)}
-async function finishGame(kind){
-  stopTimer("game");const total=gameStats.right+gameStats.wrong,accuracy=total?Math.round(gameStats.right/total*100):0;
-  state.gamesPlayed++;save();
-  app.innerHTML=shell("Game complete",kind);
-  app.innerHTML+=`<div class="completion"><span class="tag">ROUND COMPLETE</span><h2>Nice. Round finished.</h2><div class="completion-stats">${statBox("RIGHT",gameStats.right,"right")}${statBox("WRONG",gameStats.wrong,"wrong")}<div><strong>${accuracy}%</strong><span>Accuracy</span></div></div><button class="btn" id="playAgain">Play again</button></div>`;
-  document.querySelector("#playAgain").onclick=()=>startGame(kind);
-}
+function answerGame(btn,q,kind,scope){if(!gameTimer)return;stopTimer("game");const correct=btn.dataset.answer===q.answer;if(correct)gameStats.right++;else gameStats.wrong++;document.querySelectorAll(".option").forEach(b=>{b.disabled=true;if(b.dataset.answer===q.answer)b.classList.add("correct")});if(!correct)btn.classList.add("wrong");document.querySelector("#gameFeedback").innerHTML=`<div class="feedback"><strong>${correct?"✓ Correct":"✗ Not quite"}</strong><p>${esc(q.explanation||"")}</p><div class="rating-row"><button class="rating" id="gameEasy">Easy · next</button><button class="rating" id="gameHard">Hard · repeat later</button></div></div>`;document.querySelector("#gameEasy").onclick=()=>nextGame(kind,scope,false);document.querySelector("#gameHard").onclick=()=>nextGame(kind,scope,true)}
+function nextGame(kind,scope,hard){if(hard)gameDeck.push(gameDeck[gamePos]);gamePos++;if(gamePos>=gameDeck.length)finishGame(kind,scope);else renderGame(kind,scope)}
+async function finishGame(kind,scope){stopTimer("game");const total=gameStats.right+gameStats.wrong,accuracy=total?Math.round(gameStats.right/total*100):0;state.gamesPlayed++;save();if(currentUser){await sb.from("user_game_history").insert({user_id:currentUser.id,game_type:kind,score:gameStats.right,total:total});await syncCloudProgress()}app.innerHTML=shell("Game complete",kind);app.innerHTML+=`<div class="completion"><span class="tag">ROUND COMPLETE</span><h2>Nice. Round finished.</h2><div class="completion-stats">${statBox("RIGHT",gameStats.right,"right")}${statBox("WRONG",gameStats.wrong,"wrong")}<div><strong>${accuracy}%</strong><span>Accuracy</span></div></div><button class="btn" id="playAgain">Play again</button> <a class="btn secondary" href="#games">Change game</a></div>`;document.querySelector("#playAgain").onclick=()=>startGame(kind,scope)}
 
 /* EXPLORE */
 function explore(){
@@ -313,10 +318,125 @@ function authorPage(id){
 }
 
 /* PROGRESS */
+function progress(){
+  const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
+  const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
+  app.innerHTML=shell("Progress","Your practice statistics. Sign in from Profile to keep them across devices.");
+  app.innerHTML+=`<div class="grid">
+    <div class="card"><span class="tag">QUIZ ACCURACY</span><div class="big-stat">${accuracy}%</div><p>${state.quizCorrect} correct out of ${state.quizAttempts} answered.</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div>
+    <div class="card"><span class="tag">REVIEW</span><div class="big-stat">${state.wrongIds.length}</div><p>Questions you have previously missed.</p></div>
+    <div class="card"><span class="tag">FLASHCARDS</span><div class="big-stat">${hard}</div><p>Cards currently rated Hard.</p></div>
+    <div class="card"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed}</div><p>Game rounds completed.</p></div>
+  </div>`;
+}
+
+/* ACCOUNT / PROFILE */
+let currentUser=null;
+let currentProfile=null;
+
+async function getSessionUser(){
+  const {data}=await sb.auth.getSession();
+  currentUser=data?.session?.user||null;
+  return currentUser;
+}
+
+async function ensureProfile(user, displayName){
+  if(!user)return null;
+  const {data,error}=await sb.from("profiles").select("id,display_name,is_admin").eq("id",user.id).maybeSingle();
+  if(error)return null;
+  if(data){currentProfile=data;return data;}
+  const name=displayName||user.user_metadata?.display_name||user.email?.split("@")[0]||"Student";
+  const {data:created}=await sb.from("profiles").insert({id:user.id,display_name:name}).select("id,display_name,is_admin").single();
+  currentProfile=created||null;
+  return currentProfile;
+}
+
+async function syncCloudProgress(){
+  if(!currentUser)return;
+  const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
+  await sb.from("user_progress").upsert({
+    user_id:currentUser.id,accuracy,quizzes_completed:state.quizRounds||0,
+    flashcards_reviewed:state.flashcardsReviewed||0,games_played:state.gamesPlayed||0,updated_at:new Date().toISOString()
+  });
+}
+
+async function loadCloudProgress(){
+  if(!currentUser)return;
+  const [{data},{data:attempts},{data:flashProgress},{data:gameHistory}]=await Promise.all([
+    sb.from("user_progress").select("accuracy,quizzes_completed,flashcards_reviewed,games_played").eq("user_id",currentUser.id).maybeSingle(),
+    sb.from("user_quiz_attempts").select("is_correct,question_id").eq("user_id",currentUser.id),
+    sb.from("user_flashcard_progress").select("flashcard_id,rating").eq("user_id",currentUser.id),
+    sb.from("user_game_history").select("id,game_type,score,total,created_at").eq("user_id",currentUser.id).order("created_at",{ascending:false})
+  ]);
+  if(data){
+    state.quizRounds=Math.max(state.quizRounds||0,data.quizzes_completed||0);
+    state.flashcardsReviewed=Math.max(state.flashcardsReviewed||0,data.flashcards_reviewed||0);
+    state.gamesPlayed=Math.max(state.gamesPlayed||0,data.games_played||0);
+  }
+  if(attempts){
+    state.quizAttempts=Math.max(state.quizAttempts||0,attempts.length);
+    state.quizCorrect=Math.max(state.quizCorrect||0,attempts.filter(x=>x.is_correct).length);
+  }
+  if(flashProgress){flashProgress.forEach(x=>{state.cardRatings[x.flashcard_id]=x.rating})}
+  if(gameHistory){state.gamesPlayed=Math.max(state.gamesPlayed||0,gameHistory.length)}
+  save();
+}
+
+async function profile(){
+  const user=await getSessionUser();
+  if(!user){
+    app.innerHTML=shell("Profile","Create a free account so your study progress can follow you across devices.");
+    app.innerHTML+=`<div class="auth-card card"><span class="tag">YOUR ACCOUNT</span><h2>Keep your progress.</h2><p>Sign up to save quiz progress, flashcard reviews and game activity with your account.</p><div class="form-grid"><div class="field"><label>Name</label><input id="authName" placeholder="Your name"></div><div class="field"><label>Email</label><input id="authEmail" type="email" placeholder="you@example.com"></div><div class="field full"><label>Password</label><input id="authPassword" type="password" placeholder="At least 6 characters"></div></div><div class="actions"><button class="btn" id="signupBtn">Create account</button><button class="btn secondary" id="loginBtn">Sign in</button></div><p id="authMessage" class="muted"></p></div>`;
+    document.querySelector("#signupBtn").onclick=signUp;
+    document.querySelector("#loginBtn").onclick=signIn;
+    return;
+  }
+  await ensureProfile(user);
+  await loadCloudProgress();
+  const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
+  const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
+  const answered=Math.max(0,state.quizAttempts||0);
+  const practiceScore=Math.min(100,Math.round((Math.min(answered,50)/50)*60 + (Math.min(state.flashcardsReviewed||0,50)/50)*20 + (Math.min(state.gamesPlayed||0,25)/25)*20));
+  app.innerHTML=shell("Profile","Your STUPIDIFICATION study account and saved progress.");
+  app.innerHTML+=`<div class="profile-progress-hero">
+    <div class="profile-progress-copy"><span class="tag">YOUR STUDY MOMENTUM</span><h2>${practiceScore>=80?"You’re in the zone.":practiceScore>=45?"You’re building momentum.":"Let’s get started."}</h2><p>Every quiz answer, flashcard review and completed game round adds to this little snapshot of your practice.</p></div>
+    <div class="progress-orb" style="--progress:${practiceScore}%"><div><strong>${practiceScore}%</strong><span>practice</span></div></div>
+  </div>
+  <div class="profile-grid">
+    <div class="card profile-main"><div class="profile-avatar">${esc((currentProfile?.display_name||user.email||"S").charAt(0).toUpperCase())}</div><span class="tag">STUDENT ACCOUNT</span><h2 class="profile-name">${esc(currentProfile?.display_name||"Student")}</h2><p class="profile-email">${esc(user.email||"")}</p><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+    <div class="card profile-stat"><span class="tag">QUIZ ACCURACY</span><div class="big-stat">${accuracy}%</div><p>${state.quizCorrect} correct out of ${state.quizAttempts} answered.</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div>
+    <div class="card profile-stat"><span class="tag">QUESTIONS ANSWERED</span><div class="big-stat">${answered}</div><p>Total quiz answers recorded.</p></div>
+    <div class="card profile-stat"><span class="tag">QUIZ ROUNDS</span><div class="big-stat">${state.quizRounds||0}</div><p>Completed quiz rounds.</p></div>
+    <div class="card profile-stat"><span class="tag">FLASHCARDS</span><div class="big-stat">${state.flashcardsReviewed||0}</div><p>Cards reviewed · ${hard} currently Hard.</p></div>
+    <div class="card profile-stat"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed||0}</div><p>Game rounds completed.</p></div>
+    <div class="card profile-review"><span class="tag">REVIEW QUEUE</span><div class="big-stat">${state.wrongIds.length}</div><p>Questions you have previously missed and should revisit.</p></div>
+  </div>`;
+  document.querySelector("#logoutBtn").onclick=async()=>{await sb.auth.signOut();currentUser=null;currentProfile=null;location.hash="#profile";render()};
+}
+
+async function signUp(){
+  const name=document.querySelector("#authName").value.trim(),email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value;
+  const msg=document.querySelector("#authMessage");
+  if(!email||password.length<6){msg.textContent="Please enter an email and a password of at least 6 characters.";return}
+  const {data,error}=await sb.auth.signUp({email,password,options:{data:{display_name:name||email.split("@")[0]}}});
+  if(error){msg.textContent=error.message;return}
+  if(data.session){await ensureProfile(data.user,name);await syncCloudProgress();msg.textContent="Account created. Opening your profile…";location.hash="#profile";render()}
+  else msg.textContent="Account created. Check your email to confirm your account, then sign in.";
+}
+async function signIn(){
+  const email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value,msg=document.querySelector("#authMessage");
+  const {data,error}=await sb.auth.signInWithPassword({email,password});
+  if(error){msg.textContent=error.message;return}
+  currentUser=data.user;await ensureProfile(data.user);await loadCloudProgress();await syncCloudProgress();location.hash="#profile";render();
+}
+
 /* ROUTING */
 function render(){
   setActive();
   if(route==="home")home();
+  else if(route==="learn")learn();
+  else if(route.startsWith("learn-module-"))learnModule(decodeURIComponent(route.slice(12)));
+  else if(route.startsWith("learn-topic-"))learnTopic(decodeURIComponent(route.slice(11)));
   else if(route==="quiz")quiz();
   else if(route.startsWith("quiz-module-"))quizModule(decodeURIComponent(route.slice(12)));
   else if(route.startsWith("quiz-topic-"))startQuiz(decodeURIComponent(route.slice(11)));
@@ -327,10 +447,12 @@ function render(){
   else if(route.startsWith("game-"))startGame(route.slice(5));
   else if(route==="explore")explore();
   else if(route.startsWith("author-"))authorPage(decodeURIComponent(route.slice(7)));
+  else if(route==="progress"){location.hash="#profile";return;}
+  else if(route==="profile")profile();
   else home();
   window.scrollTo({top:0,behavior:"smooth"});
 }
 window.addEventListener("hashchange",()=>{route=location.hash.slice(1)||"home";document.querySelector("#mainNav").classList.remove("open");render()});
 document.querySelector("#menuToggle").onclick=()=>document.querySelector("#mainNav").classList.toggle("open");
 
-(async()=>{try{await loadData()}catch(e){console.error(e)}render()})();
+(async()=>{try{await loadData();await getSessionUser();if(currentUser){await ensureProfile(currentUser);await loadCloudProgress()}}catch(e){console.error(e)}render()})();
