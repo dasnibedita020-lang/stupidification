@@ -21,10 +21,17 @@ const configs={
 };
 const baseTabs=['dashboard','modules','topics','authors','works','characters','theorists','theories','concepts','learn_content','quiz_questions','flashcards','game_questions','bulk_import'];
 const gameTypes=[
- {key:'author_work',label:'Author ↔ Work',badge:'MATCH',description:'Connect an author to a work.'},
- {key:'character_work',label:'Character ↔ Work',badge:'MATCH',description:'Connect a character to its work.'},
- {key:'work_date',label:'Work ↔ Date',badge:'MATCH',description:'Match a work to its publication date.'},
+ {key:'author_work',label:'Author → Work',badge:'MATCH',description:'Given an author, identify a work.'},
+ {key:'work_author',label:'Work → Author',badge:'MATCH',description:'Given a work, identify its author.'},
+ {key:'work_date',label:'Work → Date',badge:'DATE',description:'Given a work, identify its date.'},
+ {key:'author_work_date',label:'Author → Work + Date',badge:'DATE',description:'Match an author to the correct work and date.'},
+ {key:'movement_writer',label:'Movement → Writer',badge:'MOVE',description:'Given a literary movement, identify a writer.'},
+ {key:'writer_movement',label:'Writer → Movement',badge:'MOVE',description:'Given a writer, identify the associated movement.'},
  {key:'chronology',label:'Chronology',badge:'ORDER',description:'Put works in chronological order.'},
+ {key:'period_classification',label:'Victorian vs Modernist',badge:'PERIOD',description:'Identify the literary period of a writer or work.'},
+ {key:'who_am_i',label:'Who Am I?',badge:'CLUES',description:'Identify the writer from literary clues.'},
+ {key:'full_stupidification',label:'Full Stupidification',badge:'BRUTAL',description:'Mix writer, work, date and movement.'},
+ {key:'character_work',label:'Character ↔ Work',badge:'MATCH',description:'Connect a character to its work.'},
  {key:'theory',label:'Theory ↔ Theorist',badge:'THEORY',description:'Identify the thinker associated with a theory.'}
 ];
 let gameFilter='all';

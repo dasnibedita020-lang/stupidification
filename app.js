@@ -12,18 +12,15 @@ const app=document.querySelector("#app");
 
 let route=location.hash.slice(1)||"home";
 let modules=[],topics=[],learnData=[],quizData=[],cardsData=[],authors=[],works=[],theories=[],theorists=[],concepts=[],gameQuestions=[];
-const blankState=()=>({quizAttempts:0,quizCorrect:0,wrongIds:[],cardRatings:{},gamesPlayed:0,quizRounds:0,flashcardsReviewed:0});
-let state=JSON.parse(localStorage.getItem("stupidificationGuestState")||localStorage.getItem("stupidificationState")||"null")||blankState();
+let state=JSON.parse(localStorage.getItem("stupidificationState")||"null")||{
+  quizAttempts:0,quizCorrect:0,wrongIds:[],cardRatings:{},gamesPlayed:0,quizRounds:0,flashcardsReviewed:0
+};
 let quizDeck=[],quizPos=0,quizStats={right:0,wrong:0},quizTimer=null,quizStarted=0;
 let gameDeck=[],gamePos=0,gameStats={right:0,wrong:0},gameTimer=null,gameStarted=0;
 let cardDeck=[],cardPos=0,cardTopic=null;
 
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const save=()=>localStorage.setItem(currentUser?`stupidificationState_${currentUser.id}`:"stupidificationGuestState",JSON.stringify(state));
-function loadLocalStateForUser(user){
-  const key=user?`stupidificationState_${user.id}`:"stupidificationGuestState";
-  try{state=JSON.parse(localStorage.getItem(key)||"null")||blankState()}catch{state=blankState()}
-}
+const save=()=>localStorage.setItem("stupidificationState",JSON.stringify(state));
 const shuffle=a=>[...a].sort(()=>Math.random()-.5);
 const feature=(tag,title,desc,href)=>`<a class="card card-link" href="${href}"><span class="tag">${tag}</span><h2>${title}</h2><p>${desc}</p><span class="arrow">Open →</span></a>`;
 const shell=(title,intro)=>`<section class="page-head"><div class="eyebrow">STUPIDIFICATION · ${esc(title)}</div><h1 class="page-title">${esc(title)}</h1><p class="intro">${intro}</p></section>`;
@@ -52,12 +49,6 @@ function cleanQuizOption(text){
 }
 function quizHead(topicName){
   return `<section class="quiz-page-head"><div class="eyebrow">STUPIDIFICATION · QUIZ · ${esc(topicName||"Topic")}</div><h1>${esc(topicName||"Quiz")}</h1><p>Answer first. Then read the explanation and rate the question.</p></section>`;
-}
-
-function updateAuthNav(){
-  const link=document.querySelector('#mainNav a[data-route="profile"]');
-  if(!link)return;
-  link.textContent=currentUser?"Profile":"Sign in / Sign up";
 }
 
 function setActive(){
@@ -147,8 +138,7 @@ function renderQuiz(topicId){
   const topic=topics.find(t=>t.id===topicId);
   if(!quizDeck.length){app.innerHTML=shell("Quiz",topic?.name||"Topic")+`<div class="empty">No published questions are available for this topic.</div>`;return}
   const q=quizDeck[quizPos];
-  const optionData=shuffle((q.optionRows||[]).map(row=>({row,text:cleanQuizOption(row.option_text)})));
-  const options=optionData.map(x=>x.text);
+  const options=shuffle((q.options||[]).map(cleanQuizOption));
   const letters=optionLetters;
   const stem=cleanQuizQuestion(q.question,options);
   app.innerHTML=quizHead(topic?.name||"");
@@ -158,7 +148,7 @@ function renderQuiz(topicId){
     </div>
     <div class="quiz-meta"><span>Question ${quizPos+1}</span><span>${quizDeck.length} in current deck</span></div>
     <h2 class="quiz-question">${esc(stem)}</h2>
-    <div class="options">${optionData.map((item,i)=>`<button class="option" data-answer="${esc(item.text)}"><span class="option-letter">${letters[i]||String(i+1)}.</span><span>${esc(item.text)}</span></button>`).join("")}</div>
+    <div class="options">${options.map((o,i)=>`<button class="option" data-answer="${esc(o)}"><span class="option-letter">${letters[i]||String(i+1)}.</span><span>${esc(o)}</span></button>`).join("")}</div>
     <div id="quizFeedback"></div>
   </div>`;
   quizStarted=Date.now();
@@ -166,13 +156,12 @@ function renderQuiz(topicId){
   document.querySelectorAll(".option").forEach(b=>b.onclick=()=>answerQuiz(b,q,topicId));
 }
 function answerQuiz(btn,q,topicId){
-  if(!quizStarted)return;
+  if(!quizTimer)return;
   stopTimer("quiz");
-  const selectedText=cleanQuizOption(btn.dataset.answer);
-  const correct=selectedText===cleanQuizOption(q.answer);
+  const correct=btn.dataset.answer===q.answer;
   if(correct){quizStats.right++;state.quizCorrect++}else{quizStats.wrong++;if(!state.wrongIds.includes(q.id))state.wrongIds.push(q.id)}
   state.quizAttempts++;save();syncCloudProgress();
-  if(currentUser){const selected=q.optionRows?.find(o=>cleanQuizOption(o.option_text)===selectedText);sb.from("user_quiz_attempts").insert({user_id:currentUser.id,question_id:q.id,selected_option_id:selected?.id||null,is_correct:correct})}
+  if(currentUser){const selected=q.optionRows?.find(o=>o.option_text===btn.dataset.answer);sb.from("user_quiz_attempts").insert({user_id:currentUser.id,question_id:q.id,selected_option_id:selected?.id||null,is_correct:correct})}
   document.querySelectorAll(".option").forEach(b=>{b.disabled=true;if(b.dataset.answer===q.answer)b.classList.add("correct")});
   if(!correct)btn.classList.add("wrong");
   const feedback=document.querySelector("#quizFeedback");
@@ -238,10 +227,17 @@ function addRatings(c){
 function games(){
   app.innerHTML=shell("Games","Every game uses an adaptive deck. Hard questions return later; Easy questions leave the deck.");
   app.innerHTML+=`<div class="grid">
-    ${feature("MATCH","Author ↔ Work","Connect an author to a work.","#game-author_work")}
-    ${feature("MATCH","Character ↔ Work","Connect a character to its work.","#game-character_work")}
-    ${feature("MATCH","Work ↔ Date","Match a work to its publication date.","#game-work_date")}
+    ${feature("MATCH","Author → Work","Given an author, identify a work.","#game-author_work")}
+    ${feature("MATCH","Work → Author","Given a work, identify its author.","#game-work_author")}
+    ${feature("DATE","Work → Date","Given a work, identify its date.","#game-work_date")}
+    ${feature("DATE","Author → Work + Date","Match an author to the correct work and date.","#game-author_work_date")}
+    ${feature("MOVE","Movement → Writer","Given a movement, identify a writer.","#game-movement_writer")}
+    ${feature("MOVE","Writer → Movement","Given a writer, identify the movement.","#game-writer_movement")}
     ${feature("ORDER","Chronology","Put works in chronological order.","#game-chronology")}
+    ${feature("PERIOD","Victorian vs Modernist","Identify the literary period.","#game-period_classification")}
+    ${feature("CLUES","Who Am I?","Identify the writer from clues.","#game-who_am_i")}
+    ${feature("BRUTAL","Full Stupidification","Mix writer, work, date and movement.","#game-full_stupidification")}
+    ${feature("MATCH","Character ↔ Work","Connect a character to its work.","#game-character_work")}
     ${feature("THEORY","Theory ↔ Theorist","Identify the thinker associated with a theory.","#game-theory")}
   </div>`;
 }
@@ -259,7 +255,7 @@ function startGame(kind){
   gameDeck=shuffle(pool);renderGame(kind);
 }
 function renderGame(kind){
-  const labels={author_work:"Author ↔ Work",character_work:"Character ↔ Work",work_date:"Work ↔ Date",chronology:"Chronology",theory:"Theory ↔ Theorist"};
+  const labels={author_work:"Author → Work",work_author:"Work → Author",work_date:"Work → Date",author_work_date:"Author → Work + Date",movement_writer:"Movement → Writer",writer_movement:"Writer → Movement",chronology:"Chronology",period_classification:"Victorian vs Modernist",who_am_i:"Who Am I?",full_stupidification:"Full Stupidification",character_work:"Character ↔ Work",theory:"Theory ↔ Theorist"};
   if(!gameDeck.length){app.innerHTML=shell(labels[kind]||"Game","Game");app.innerHTML+=`<div class="empty">No published game questions are available yet.</div>`;return}
   const q=gameDeck[gamePos],choices=Array.isArray(q.choices)?shuffle(q.choices):[];
   app.innerHTML=shell(labels[kind]||"Game","Answer, read the explanation, then decide whether the question is Easy or Hard.");
@@ -337,8 +333,6 @@ let currentProfile=null;
 async function getSessionUser(){
   const {data}=await sb.auth.getSession();
   currentUser=data?.session?.user||null;
-  loadLocalStateForUser(currentUser);
-  updateAuthNav();
   return currentUser;
 }
 
@@ -364,57 +358,37 @@ async function syncCloudProgress(){
 
 async function loadCloudProgress(){
   if(!currentUser)return;
-  const [{data,error:progressError},{data:attempts,error:attemptError},{data:flashProgress,error:flashError}]=await Promise.all([
+  const [{data},{data:attempts},{data:flashProgress}]=await Promise.all([
     sb.from("user_progress").select("accuracy,quizzes_completed,flashcards_reviewed,games_played").eq("user_id",currentUser.id).maybeSingle(),
     sb.from("user_quiz_attempts").select("is_correct,question_id").eq("user_id",currentUser.id),
     sb.from("user_flashcard_progress").select("flashcard_id,rating").eq("user_id",currentUser.id)
   ]);
-  // Supabase is the account source of truth for data that is already stored there.
-  if(!progressError&&progress){
-    state.quizRounds=progress.quizzes_completed||0;
-    state.flashcardsReviewed=progress.flashcards_reviewed||0;
-    state.gamesPlayed=progress.games_played||0;
+  if(data){
+    state.quizRounds=Math.max(state.quizRounds||0,data.quizzes_completed||0);
+    state.flashcardsReviewed=Math.max(state.flashcardsReviewed||0,data.flashcards_reviewed||0);
+    state.gamesPlayed=Math.max(state.gamesPlayed||0,data.games_played||0);
   }
-  if(!attemptError&&Array.isArray(attempts)){
-    state.quizAttempts=attempts.length;
-    state.quizCorrect=attempts.filter(x=>x.is_correct).length;
-    state.wrongIds=[...new Set(attempts.filter(x=>!x.is_correct).map(x=>x.question_id).filter(Boolean))];
+  if(attempts){
+    state.quizAttempts=Math.max(state.quizAttempts||0,attempts.length);
+    state.quizCorrect=Math.max(state.quizCorrect||0,attempts.filter(x=>x.is_correct).length);
   }
-  if(!flashError&&Array.isArray(flashProgress)){
-    state.cardRatings={};flashProgress.forEach(x=>{state.cardRatings[x.flashcard_id]=x.rating});
-  }
-  save();
+  if(flashProgress){flashProgress.forEach(x=>{state.cardRatings[x.flashcard_id]=x.rating})}
 }
 
 async function profile(){
   const user=await getSessionUser();
   if(!user){
-    app.innerHTML=shell("Profile","Create an account or sign in to save your STUPIDIFICATION progress across devices.");
-    app.innerHTML+=`<div class="auth-card card">
-      <span class="tag">YOUR ACCOUNT</span>
-      <h2>Sign in or create your account</h2>
-      <p class="muted">Your quiz attempts, flashcard ratings and game progress are linked to your account when you sign in.</p>
-      <div class="form-grid">
-        <div class="field full"><label>Name <span class="auth-optional">(only needed for sign up)</span></label><input id="authName" placeholder="Your name"></div>
-        <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
-        <div class="field"><label>Password</label><input id="authPassword" type="password" autocomplete="current-password" placeholder="At least 6 characters"></div>
-      </div>
-      <div class="actions auth-actions">
-        <button class="btn" id="loginBtn">Sign in</button>
-        <button class="btn secondary" id="signupBtn">Create account</button>
-      </div>
-      <p id="authMessage" class="auth-message muted"></p>
-    </div>`;
+    app.innerHTML=shell("Profile","Create a free account so your study progress can follow you across devices.");
+    app.innerHTML+=`<div class="auth-card card"><span class="tag">YOUR ACCOUNT</span><h2>Keep your progress.</h2><p>Sign up to save quiz progress, flashcard reviews and game activity with your account.</p><div class="form-grid"><div class="field"><label>Name</label><input id="authName" placeholder="Your name"></div><div class="field"><label>Email</label><input id="authEmail" type="email" placeholder="you@example.com"></div><div class="field full"><label>Password</label><input id="authPassword" type="password" placeholder="At least 6 characters"></div></div><div class="actions"><button class="btn" id="signupBtn">Create account</button><button class="btn secondary" id="loginBtn">Sign in</button></div><p id="authMessage" class="muted"></p></div>`;
     document.querySelector("#signupBtn").onclick=signUp;
     document.querySelector("#loginBtn").onclick=signIn;
     return;
   }
-
-  // Render the account immediately; cloud loading must never leave Profile blank.
   await ensureProfile(user);
-  app.innerHTML=shell("Profile","Your STUPIDIFICATION study account and saved progress.");
+  await loadCloudProgress();
   const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
   const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
+  app.innerHTML=shell("Profile","Your STUPIDIFICATION study account and saved progress.");
   app.innerHTML+=`<div class="profile-grid">
     <div class="card profile-main"><div class="profile-avatar">${esc((currentProfile?.display_name||user.email||"S").charAt(0).toUpperCase())}</div><span class="tag">STUDENT ACCOUNT</span><h2 class="profile-name">${esc(currentProfile?.display_name||"Student")}</h2><p class="profile-email">${esc(user.email||"")}</p><button class="btn secondary" id="logoutBtn">Sign out</button></div>
     <div class="card profile-stat"><span class="tag">QUIZ ACCURACY</span><div class="big-stat">${accuracy}%</div><p>${state.quizCorrect} correct out of ${state.quizAttempts} answered.</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div>
@@ -423,49 +397,23 @@ async function profile(){
     <div class="card profile-stat"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed||0}</div><p>Game rounds completed.</p></div>
     <div class="card profile-review"><span class="tag">REVIEW QUEUE</span><div class="big-stat">${state.wrongIds.length}</div><p>Questions you have previously missed and should revisit.</p></div>
   </div>`;
-  document.querySelector("#logoutBtn").onclick=async()=>{
-    save();
-    await sb.auth.signOut();
-    currentUser=null;currentProfile=null;loadLocalStateForUser(null);updateAuthNav();
-    location.hash="#profile";render();
-  };
-  // Refresh the visible numbers from Supabase without blocking the initial page.
-  loadCloudProgress().then(()=>{save();profileRefreshStats()}).catch(()=>{});
-}
-
-function profileRefreshStats(){
-  if(route!=="profile"||!currentUser)return;
-  const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
-  const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
-  const vals=document.querySelectorAll(".profile-stat .big-stat");
-  if(vals[0])vals[0].textContent=`${accuracy}%`;
-  if(vals[1])vals[1].textContent=state.quizRounds||0;
-  if(vals[2])vals[2].textContent=state.flashcardsReviewed||0;
-  if(vals[3])vals[3].textContent=state.gamesPlayed||0;
-  const review=document.querySelector(".profile-review .big-stat");if(review)review.textContent=state.wrongIds.length;
-  const p=document.querySelector(".profile-stat .progress-fill");if(p)p.style.width=`${accuracy}%`;
-  const copy=document.querySelector(".profile-stat p");if(copy)copy.textContent=`${state.quizCorrect} correct out of ${state.quizAttempts} answered.`;
+  document.querySelector("#logoutBtn").onclick=async()=>{await sb.auth.signOut();currentUser=null;currentProfile=null;location.hash="#profile";render()};
 }
 
 async function signUp(){
-  const name=document.querySelector("#authName").value.trim(),email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value,msg=document.querySelector("#authMessage");
+  const name=document.querySelector("#authName").value.trim(),email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value;
+  const msg=document.querySelector("#authMessage");
   if(!email||password.length<6){msg.textContent="Please enter an email and a password of at least 6 characters.";return}
-  msg.textContent="Creating your account…";
   const {data,error}=await sb.auth.signUp({email,password,options:{data:{display_name:name||email.split("@")[0]}}});
   if(error){msg.textContent=error.message;return}
-  if(data.session){
-    currentUser=data.user;loadLocalStateForUser(currentUser);await ensureProfile(data.user,name);await syncCloudProgress();updateAuthNav();msg.textContent="Account created. Opening your profile…";location.hash="#profile";render();
-  }else{
-    msg.textContent="Account created. Check your email to confirm it, then return here and sign in.";
-  }
+  if(data.session){await ensureProfile(data.user,name);await syncCloudProgress();msg.textContent="Account created. Opening your profile…";location.hash="#profile";render()}
+  else msg.textContent="Account created. Check your email to confirm your account, then sign in.";
 }
 async function signIn(){
   const email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value,msg=document.querySelector("#authMessage");
-  if(!email||!password){msg.textContent="Enter your email and password.";return}
-  msg.textContent="Signing in…";
   const {data,error}=await sb.auth.signInWithPassword({email,password});
   if(error){msg.textContent=error.message;return}
-  currentUser=data.user;loadLocalStateForUser(currentUser);currentProfile=null;await ensureProfile(data.user);await loadCloudProgress();save();updateAuthNav();location.hash="#profile";render();
+  currentUser=data.user;await ensureProfile(data.user);await loadCloudProgress();await syncCloudProgress();location.hash="#profile";render();
 }
 
 /* ROUTING */
@@ -473,8 +421,8 @@ function render(){
   setActive();
   if(route==="home")home();
   else if(route==="learn")learn();
-  else if(route.startsWith("learn-module-"))learnModule(decodeURIComponent(route.slice(13)));
-  else if(route.startsWith("learn-topic-"))learnTopic(decodeURIComponent(route.slice(12)));
+  else if(route.startsWith("learn-module-"))learnModule(decodeURIComponent(route.slice(12)));
+  else if(route.startsWith("learn-topic-"))learnTopic(decodeURIComponent(route.slice(11)));
   else if(route==="quiz")quiz();
   else if(route.startsWith("quiz-module-"))quizModule(decodeURIComponent(route.slice(12)));
   else if(route.startsWith("quiz-topic-"))startQuiz(decodeURIComponent(route.slice(11)));
@@ -493,4 +441,4 @@ function render(){
 window.addEventListener("hashchange",()=>{route=location.hash.slice(1)||"home";document.querySelector("#mainNav").classList.remove("open");render()});
 document.querySelector("#menuToggle").onclick=()=>document.querySelector("#mainNav").classList.toggle("open");
 
-(async()=>{try{await loadData();await getSessionUser();if(currentUser){await ensureProfile(currentUser);await loadCloudProgress()}}catch(e){console.error(e)}updateAuthNav();render()})();
+(async()=>{try{await loadData();await getSessionUser();if(currentUser){await ensureProfile(currentUser);await loadCloudProgress()}}catch(e){console.error(e)}render()})();
