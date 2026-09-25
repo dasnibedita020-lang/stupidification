@@ -12,15 +12,18 @@ const app=document.querySelector("#app");
 
 let route=location.hash.slice(1)||"home";
 let modules=[],topics=[],learnData=[],quizData=[],cardsData=[],authors=[],works=[],theories=[],theorists=[],concepts=[],gameQuestions=[];
-let state=JSON.parse(localStorage.getItem("stupidificationState")||"null")||{
-  quizAttempts:0,quizCorrect:0,wrongIds:[],cardRatings:{},gamesPlayed:0,quizRounds:0,flashcardsReviewed:0
-};
+const blankState=()=>({quizAttempts:0,quizCorrect:0,wrongIds:[],cardRatings:{},gamesPlayed:0,quizRounds:0,flashcardsReviewed:0});
+let state=JSON.parse(localStorage.getItem("stupidificationGuestState")||localStorage.getItem("stupidificationState")||"null")||blankState();
 let quizDeck=[],quizPos=0,quizStats={right:0,wrong:0},quizTimer=null,quizStarted=0;
 let gameDeck=[],gamePos=0,gameStats={right:0,wrong:0},gameTimer=null,gameStarted=0;
 let cardDeck=[],cardPos=0,cardTopic=null;
 
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const save=()=>localStorage.setItem("stupidificationState",JSON.stringify(state));
+const save=()=>localStorage.setItem(currentUser?`stupidificationState_${currentUser.id}`:"stupidificationGuestState",JSON.stringify(state));
+function loadLocalStateForUser(user){
+  const key=user?`stupidificationState_${user.id}`:"stupidificationGuestState";
+  try{state=JSON.parse(localStorage.getItem(key)||"null")||blankState()}catch{state=blankState()}
+}
 const shuffle=a=>[...a].sort(()=>Math.random()-.5);
 const feature=(tag,title,desc,href)=>`<a class="card card-link" href="${href}"><span class="tag">${tag}</span><h2>${title}</h2><p>${desc}</p><span class="arrow">Open →</span></a>`;
 const shell=(title,intro)=>`<section class="page-head"><div class="eyebrow">STUPIDIFICATION · ${esc(title)}</div><h1 class="page-title">${esc(title)}</h1><p class="intro">${intro}</p></section>`;
@@ -49,6 +52,12 @@ function cleanQuizOption(text){
 }
 function quizHead(topicName){
   return `<section class="quiz-page-head"><div class="eyebrow">STUPIDIFICATION · QUIZ · ${esc(topicName||"Topic")}</div><h1>${esc(topicName||"Quiz")}</h1><p>Answer first. Then read the explanation and rate the question.</p></section>`;
+}
+
+function updateAuthNav(){
+  const link=document.querySelector('#mainNav a[data-route="profile"]');
+  if(!link)return;
+  link.textContent=currentUser?"Profile":"Sign in / Sign up";
 }
 
 function setActive(){
@@ -328,6 +337,8 @@ let currentProfile=null;
 async function getSessionUser(){
   const {data}=await sb.auth.getSession();
   currentUser=data?.session?.user||null;
+  loadLocalStateForUser(currentUser);
+  updateAuthNav();
   return currentUser;
 }
 
@@ -353,37 +364,57 @@ async function syncCloudProgress(){
 
 async function loadCloudProgress(){
   if(!currentUser)return;
-  const [{data},{data:attempts},{data:flashProgress}]=await Promise.all([
+  const [{data,error:progressError},{data:attempts,error:attemptError},{data:flashProgress,error:flashError}]=await Promise.all([
     sb.from("user_progress").select("accuracy,quizzes_completed,flashcards_reviewed,games_played").eq("user_id",currentUser.id).maybeSingle(),
     sb.from("user_quiz_attempts").select("is_correct,question_id").eq("user_id",currentUser.id),
     sb.from("user_flashcard_progress").select("flashcard_id,rating").eq("user_id",currentUser.id)
   ]);
-  if(data){
-    state.quizRounds=Math.max(state.quizRounds||0,data.quizzes_completed||0);
-    state.flashcardsReviewed=Math.max(state.flashcardsReviewed||0,data.flashcards_reviewed||0);
-    state.gamesPlayed=Math.max(state.gamesPlayed||0,data.games_played||0);
+  // Supabase is the account source of truth for data that is already stored there.
+  if(!progressError&&progress){
+    state.quizRounds=progress.quizzes_completed||0;
+    state.flashcardsReviewed=progress.flashcards_reviewed||0;
+    state.gamesPlayed=progress.games_played||0;
   }
-  if(attempts){
-    state.quizAttempts=Math.max(state.quizAttempts||0,attempts.length);
-    state.quizCorrect=Math.max(state.quizCorrect||0,attempts.filter(x=>x.is_correct).length);
+  if(!attemptError&&Array.isArray(attempts)){
+    state.quizAttempts=attempts.length;
+    state.quizCorrect=attempts.filter(x=>x.is_correct).length;
+    state.wrongIds=[...new Set(attempts.filter(x=>!x.is_correct).map(x=>x.question_id).filter(Boolean))];
   }
-  if(flashProgress){flashProgress.forEach(x=>{state.cardRatings[x.flashcard_id]=x.rating})}
+  if(!flashError&&Array.isArray(flashProgress)){
+    state.cardRatings={};flashProgress.forEach(x=>{state.cardRatings[x.flashcard_id]=x.rating});
+  }
+  save();
 }
 
 async function profile(){
   const user=await getSessionUser();
   if(!user){
-    app.innerHTML=shell("Profile","Create a free account so your study progress can follow you across devices.");
-    app.innerHTML+=`<div class="auth-card card"><span class="tag">YOUR ACCOUNT</span><h2>Keep your progress.</h2><p>Sign up to save quiz progress, flashcard reviews and game activity with your account.</p><div class="form-grid"><div class="field"><label>Name</label><input id="authName" placeholder="Your name"></div><div class="field"><label>Email</label><input id="authEmail" type="email" placeholder="you@example.com"></div><div class="field full"><label>Password</label><input id="authPassword" type="password" placeholder="At least 6 characters"></div></div><div class="actions"><button class="btn" id="signupBtn">Create account</button><button class="btn secondary" id="loginBtn">Sign in</button></div><p id="authMessage" class="muted"></p></div>`;
+    app.innerHTML=shell("Profile","Create an account or sign in to save your STUPIDIFICATION progress across devices.");
+    app.innerHTML+=`<div class="auth-card card">
+      <span class="tag">YOUR ACCOUNT</span>
+      <h2>Sign in or create your account</h2>
+      <p class="muted">Your quiz attempts, flashcard ratings and game progress are linked to your account when you sign in.</p>
+      <div class="form-grid">
+        <div class="field full"><label>Name <span class="auth-optional">(only needed for sign up)</span></label><input id="authName" placeholder="Your name"></div>
+        <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
+        <div class="field"><label>Password</label><input id="authPassword" type="password" autocomplete="current-password" placeholder="At least 6 characters"></div>
+      </div>
+      <div class="actions auth-actions">
+        <button class="btn" id="loginBtn">Sign in</button>
+        <button class="btn secondary" id="signupBtn">Create account</button>
+      </div>
+      <p id="authMessage" class="auth-message muted"></p>
+    </div>`;
     document.querySelector("#signupBtn").onclick=signUp;
     document.querySelector("#loginBtn").onclick=signIn;
     return;
   }
+
+  // Render the account immediately; cloud loading must never leave Profile blank.
   await ensureProfile(user);
-  await loadCloudProgress();
+  app.innerHTML=shell("Profile","Your STUPIDIFICATION study account and saved progress.");
   const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
   const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
-  app.innerHTML=shell("Profile","Your STUPIDIFICATION study account and saved progress.");
   app.innerHTML+=`<div class="profile-grid">
     <div class="card profile-main"><div class="profile-avatar">${esc((currentProfile?.display_name||user.email||"S").charAt(0).toUpperCase())}</div><span class="tag">STUDENT ACCOUNT</span><h2 class="profile-name">${esc(currentProfile?.display_name||"Student")}</h2><p class="profile-email">${esc(user.email||"")}</p><button class="btn secondary" id="logoutBtn">Sign out</button></div>
     <div class="card profile-stat"><span class="tag">QUIZ ACCURACY</span><div class="big-stat">${accuracy}%</div><p>${state.quizCorrect} correct out of ${state.quizAttempts} answered.</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div>
@@ -392,23 +423,49 @@ async function profile(){
     <div class="card profile-stat"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed||0}</div><p>Game rounds completed.</p></div>
     <div class="card profile-review"><span class="tag">REVIEW QUEUE</span><div class="big-stat">${state.wrongIds.length}</div><p>Questions you have previously missed and should revisit.</p></div>
   </div>`;
-  document.querySelector("#logoutBtn").onclick=async()=>{await sb.auth.signOut();currentUser=null;currentProfile=null;location.hash="#profile";render()};
+  document.querySelector("#logoutBtn").onclick=async()=>{
+    save();
+    await sb.auth.signOut();
+    currentUser=null;currentProfile=null;loadLocalStateForUser(null);updateAuthNav();
+    location.hash="#profile";render();
+  };
+  // Refresh the visible numbers from Supabase without blocking the initial page.
+  loadCloudProgress().then(()=>{save();profileRefreshStats()}).catch(()=>{});
+}
+
+function profileRefreshStats(){
+  if(route!=="profile"||!currentUser)return;
+  const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
+  const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
+  const vals=document.querySelectorAll(".profile-stat .big-stat");
+  if(vals[0])vals[0].textContent=`${accuracy}%`;
+  if(vals[1])vals[1].textContent=state.quizRounds||0;
+  if(vals[2])vals[2].textContent=state.flashcardsReviewed||0;
+  if(vals[3])vals[3].textContent=state.gamesPlayed||0;
+  const review=document.querySelector(".profile-review .big-stat");if(review)review.textContent=state.wrongIds.length;
+  const p=document.querySelector(".profile-stat .progress-fill");if(p)p.style.width=`${accuracy}%`;
+  const copy=document.querySelector(".profile-stat p");if(copy)copy.textContent=`${state.quizCorrect} correct out of ${state.quizAttempts} answered.`;
 }
 
 async function signUp(){
-  const name=document.querySelector("#authName").value.trim(),email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value;
-  const msg=document.querySelector("#authMessage");
+  const name=document.querySelector("#authName").value.trim(),email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value,msg=document.querySelector("#authMessage");
   if(!email||password.length<6){msg.textContent="Please enter an email and a password of at least 6 characters.";return}
+  msg.textContent="Creating your account…";
   const {data,error}=await sb.auth.signUp({email,password,options:{data:{display_name:name||email.split("@")[0]}}});
   if(error){msg.textContent=error.message;return}
-  if(data.session){await ensureProfile(data.user,name);await syncCloudProgress();msg.textContent="Account created. Opening your profile…";location.hash="#profile";render()}
-  else msg.textContent="Account created. Check your email to confirm your account, then sign in.";
+  if(data.session){
+    currentUser=data.user;loadLocalStateForUser(currentUser);await ensureProfile(data.user,name);await syncCloudProgress();updateAuthNav();msg.textContent="Account created. Opening your profile…";location.hash="#profile";render();
+  }else{
+    msg.textContent="Account created. Check your email to confirm it, then return here and sign in.";
+  }
 }
 async function signIn(){
   const email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value,msg=document.querySelector("#authMessage");
+  if(!email||!password){msg.textContent="Enter your email and password.";return}
+  msg.textContent="Signing in…";
   const {data,error}=await sb.auth.signInWithPassword({email,password});
   if(error){msg.textContent=error.message;return}
-  currentUser=data.user;await ensureProfile(data.user);await loadCloudProgress();await syncCloudProgress();location.hash="#profile";render();
+  currentUser=data.user;loadLocalStateForUser(currentUser);currentProfile=null;await ensureProfile(data.user);await loadCloudProgress();save();updateAuthNav();location.hash="#profile";render();
 }
 
 /* ROUTING */
@@ -436,4 +493,4 @@ function render(){
 window.addEventListener("hashchange",()=>{route=location.hash.slice(1)||"home";document.querySelector("#mainNav").classList.remove("open");render()});
 document.querySelector("#menuToggle").onclick=()=>document.querySelector("#mainNav").classList.toggle("open");
 
-(async()=>{try{await loadData();await getSessionUser();if(currentUser){await ensureProfile(currentUser);await loadCloudProgress()}}catch(e){console.error(e)}render()})();
+(async()=>{try{await loadData();await getSessionUser();if(currentUser){await ensureProfile(currentUser);await loadCloudProgress()}}catch(e){console.error(e)}updateAuthNav();render()})();

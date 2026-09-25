@@ -91,3 +91,8 @@ footer{border-top:1px solid rgba(123,47,53,.13);padding:25px 5vw;display:flex;ju
 @media (min-width:1100px){.quiz-screen{min-height:0}.quiz-page-head{padding-bottom:8px}}
 .profile-main{overflow:hidden}
 .profile-name,.profile-email{max-width:100%;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+
+
+/* ACCOUNT AUTH UI */
+.auth-card{margin:20px auto 0;max-width:760px;padding:30px}.auth-card h2{margin:12px 0 8px;font-size:clamp(1.8rem,3vw,2.5rem);color:var(--deep)}.auth-actions{margin-top:20px}.auth-message{min-height:24px;margin:14px 0 0}.auth-optional{font-weight:400;font-size:.7rem}.profile-main{overflow:hidden;min-width:0}.profile-name,.profile-email{max-width:100%;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+@media(max-width:650px){.auth-card{padding:22px}.auth-actions{flex-direction:column}.auth-actions .btn{width:100%}}
