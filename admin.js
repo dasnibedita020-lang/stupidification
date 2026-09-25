@@ -19,7 +19,7 @@ const configs={
  flashcards:{label:'Flashcards',table:'flashcards',title:'front',fields:[['topic_id','Topic','topic'],['front','Front','textarea'],['back','Back','textarea'],['source','Source','text'],['published','Published','checkbox']]},
  game_questions:{label:'Game questions',table:'game_questions',title:'prompt',special:'game'}
 };
-const baseTabs=['dashboard','modules','topics','authors','works','characters','theorists','theories','concepts','learn_content','quiz_questions','flashcards','game_questions'];
+const baseTabs=['dashboard','modules','topics','authors','works','characters','theorists','theories','concepts','learn_content','quiz_questions','flashcards','game_questions','bulk_import'];
 const gameTypes=[
  {key:'author_work',label:'Author ↔ Work',badge:'MATCH',description:'Connect an author to a work.'},
  {key:'character_work',label:'Character ↔ Work',badge:'MATCH',description:'Connect a character to its work.'},
@@ -41,7 +41,7 @@ async function boot(){
 function login(message=''){app.innerHTML=`<main class="wrap login"><div class="card"><div class="eyebrow">STUPIDIFICATION · ADMIN</div><h1>Content dashboard</h1><p>Sign in with the administrator account to add, edit and remove site content.</p><div class="field"><label>Email</label><input id="email" type="email" placeholder="admin email"></div><br><div class="field"><label>Password</label><input id="password" type="password" placeholder="password"></div><div class="actions"><button class="btn" id="login">Sign in</button><a class="btn secondary" href="./">Back to site</a></div><div class="msg" id="msg">${esc(message)}</div></div></main>`;document.querySelector('#login').onclick=async()=>{const msg=document.querySelector('#msg');const {data,error}=await sb.auth.signInWithPassword({email:document.querySelector('#email').value.trim(),password:document.querySelector('#password').value});if(error){msg.textContent=error.message;return}user=data.user;boot()}}
 function denied(){app.innerHTML=`<main class="wrap login"><div class="card"><div class="eyebrow">ACCESS DENIED</div><h1>This account is not an admin.</h1><p>The dashboard checks the <code>profiles.is_admin</code> flag in Supabase.</p><div class="actions"><button class="btn secondary" id="signout">Sign out</button><a class="btn" href="./">Back to site</a></div></div></main>`;document.querySelector('#signout').onclick=async()=>{await sb.auth.signOut();login()}}
 async function loadRelations(){const specs=['modules','topics','authors','works','characters','theorists','theories','concepts','learn_content','quiz_questions','quiz_options','flashcards','game_questions'];await Promise.all(specs.map(async t=>{let q=sb.from(t).select('*');if(['quiz_options'].includes(t))q=q.limit(5000);else q=q.limit(5000);const {data}=await q;rows[t]=data||[]}));}
-function render(){app.innerHTML=`<header class="top"><a class="brand" href="./">STUPIDIFICATION</a><div class="top-actions"><button class="btn secondary small" id="site">View site</button><button class="btn small" id="logout">Sign out</button></div></header><main class="wrap"><div class="eyebrow">ADMIN CONTENT MANAGEMENT</div><h1>Content dashboard</h1><p>Add and manage the material that powers Learn, Quiz, Flashcards, Games and Explore.</p><div class="dashboard" id="metrics"></div><div class="tabs">${baseTabs.map(t=>`<button class="tab ${active===t?'active':''}" data-tab="${t}">${t==='dashboard'?'Overview':configs[t].label}</button>`).join('')}</div><div id="panel"></div></main><div class="modal" id="modal"></div>`;document.querySelector('#logout').onclick=async()=>{await sb.auth.signOut();login()};document.querySelector('#site').onclick=()=>location.href='./';document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{active=b.dataset.tab;gameFilter='all';document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b));renderPanel()});renderMetrics();renderPanel()}
+function render(){app.innerHTML=`<header class="top"><a class="brand" href="./">STUPIDIFICATION</a><div class="top-actions"><button class="btn secondary small" id="site">View site</button><button class="btn small" id="logout">Sign out</button></div></header><main class="wrap"><div class="eyebrow">ADMIN CONTENT MANAGEMENT</div><h1>Content dashboard</h1><p>Add and manage the material that powers Learn, Quiz, Flashcards, Games and Explore.</p><div class="dashboard" id="metrics"></div><div class="tabs">${baseTabs.map(t=>`<button class="tab ${active===t?'active':''}" data-tab="${t}">${t==='dashboard'?'Overview':t==='bulk_import'?'Bulk import':configs[t].label}</button>`).join('')}</div><div id="panel"></div></main><div class="modal" id="modal"></div>`;document.querySelector('#logout').onclick=async()=>{await sb.auth.signOut();login()};document.querySelector('#site').onclick=()=>location.href='./';document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{active=b.dataset.tab;gameFilter='all';document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b));renderPanel()});renderMetrics();renderPanel()}
 function renderMetrics(){const counts=['modules','topics','authors','works','characters','theorists','theories','concepts','learn_content','quiz_questions','flashcards','game_questions'];document.querySelector('#metrics').innerHTML=counts.slice(0,4).map(k=>`<div class="metric"><span>${configs[k].label}</span><strong>${rows[k]?.length||0}</strong></div>`).join('')}
 function renderPanel(){
  const panel=document.querySelector('#panel');
@@ -52,6 +52,10 @@ function renderPanel(){
  const c=configs[active];
  if(active==='game_questions'){
    renderGameManager(panel);
+   return;
+ }
+ if(active==='bulk_import'){
+   renderBulkImport(panel);
    return;
  }
  panel.innerHTML=`<div class="toolbar"><input class="search" id="search" placeholder="Search ${c.label.toLowerCase()}…"><button class="btn" id="add">+ Add ${singular(c.label)}</button></div><div class="table-wrap"><table class="table"><thead><tr><th>${tableHeading(c.label)}</th><th>Status</th><th>Actions</th></tr></thead><tbody id="tbody"></tbody></table></div>`;
@@ -146,6 +150,214 @@ Option 4">${esc(choices.join('\n'))}</textarea></div>
    if(res.error){msg.textContent=res.error.message;return}
    await refresh('game_questions');closeModal();renderGameManager(document.querySelector('#panel'));renderMetrics();
  };
+}
+
+
+const bulkSchemas={
+ modules:{label:'Modules',required:['name'],headers:['name','sort_order']},
+ topics:{label:'Topics',required:['name'],headers:['module','name','sort_order']},
+ authors:{label:'Authors',required:['name'],headers:['name','birth_year','death_year','nationality','biography','notes']},
+ works:{label:'Works',required:['title'],headers:['title','author','publication_year','publication_date','genre','description','notes']},
+ characters:{label:'Characters',required:['name'],headers:['name','work','description']},
+ theorists:{label:'Theorists',required:['name'],headers:['name','description']},
+ theories:{label:'Theories',required:['name'],headers:['name','theorist','description','key_terms']},
+ concepts:{label:'Concepts',required:['name'],headers:['name','definition','notes']},
+ learn_content:{label:'Learn content',required:['title'],headers:['topic','title','body','source','published']},
+ quiz_questions:{label:'Quiz questions',required:['question'],headers:['topic','question','option1','option2','option3','option4','correct_answer','explanation','source','published']},
+ flashcards:{label:'Flashcards',required:['front','back'],headers:['topic','front','back','source','published']},
+ game_questions:{label:'Game questions',required:['game_type','prompt','answer'],headers:['game_type','topic','prompt','answer','choices','explanation','source','published']}
+};
+let bulkParsedRows=[];
+let bulkFileName='';
+let bulkPreview=[];
+function renderBulkImport(panel){
+ panel.innerHTML=`
+ <div class="bulk-head">
+   <div><div class="eyebrow">BULK CONTENT IMPORT</div><h2>Import lots of content at once</h2><p>Upload a CSV or Excel file. The importer understands your existing Supabase structure, resolves topic/author/work names automatically, and can load large PYQ sets without entering them one by one.</p></div>
+   <div class="bulk-head-actions"><button class="btn secondary" id="downloadTemplate">Download template</button></div>
+ </div>
+ <div class="bulk-grid">
+   <div class="card bulk-card">
+     <div class="step"><span>1</span><div><strong>Choose what you're importing</strong><small>For UGC NET PYQs, choose Quiz questions.</small></div></div>
+     <div class="field"><label>Content type</label><select id="bulkType">${Object.entries(bulkSchemas).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></div>
+     <div class="field"><label>Duplicate handling</label><label class="checkline"><input type="checkbox" id="bulkSkipDuplicates" checked> Skip exact duplicates</label></div>
+     <div class="bulk-format" id="bulkFormat"></div>
+   </div>
+   <div class="card bulk-card">
+     <div class="step"><span>2</span><div><strong>Upload CSV / Excel</strong><small>Accepted: .csv, .xlsx, .xls</small></div></div>
+     <label class="file-drop" id="fileDrop"><input id="bulkFile" type="file" accept=".csv,.xlsx,.xls"><span class="upload-icon">↑</span><strong>Choose a file</strong><small id="fileName">No file selected</small></label>
+     <div class="actions"><button class="btn" id="previewImport" disabled>Preview import</button><button class="btn secondary" id="clearImport">Clear</button></div>
+     <div id="bulkMsg" class="msg"></div>
+   </div>
+ </div>
+ <div class="card bulk-preview-card" id="bulkPreviewCard" style="display:none"></div>`;
+ const typeEl=document.querySelector('#bulkType');
+ typeEl.onchange=()=>{bulkParsedRows=[];bulkPreview=[];document.querySelector('#bulkPreviewCard').style.display='none';updateBulkFormat()};
+ document.querySelector('#bulkFile').onchange=handleBulkFile;
+ document.querySelector('#previewImport').onclick=previewBulkImport;
+ document.querySelector('#clearImport').onclick=()=>renderBulkImport(panel);
+ document.querySelector('#downloadTemplate').onclick=()=>downloadBulkTemplate(typeEl.value);
+ updateBulkFormat();
+}
+function updateBulkFormat(){
+ const type=document.querySelector('#bulkType')?.value||'quiz_questions';
+ const s=bulkSchemas[type];
+ const el=document.querySelector('#bulkFormat'); if(!el)return;
+ el.innerHTML=`<div class="template-box"><strong>Columns for this import</strong><code>${s.headers.join(', ')}</code><small>Required: ${s.required.join(', ')}. Relation fields such as <b>topic</b>, <b>author</b>, <b>work</b> and <b>module</b> can use their names instead of UUIDs.</small></div>`;
+}
+async function handleBulkFile(e){
+ const file=e.target.files?.[0]; if(!file)return;
+ bulkFileName=file.name;
+ document.querySelector('#fileName').textContent=file.name;
+ document.querySelector('#previewImport').disabled=false;
+ document.querySelector('#bulkMsg').textContent='File ready. Click Preview import.';
+}
+async function readBulkFile(file){
+ const buf=await file.arrayBuffer();
+ const wb=XLSX.read(buf,{type:'array',cellDates:false});
+ const ws=wb.Sheets[wb.SheetNames[0]];
+ return XLSX.utils.sheet_to_json(ws,{defval:'',raw:false});
+}
+function normKey(v){return String(v??'').trim().toLowerCase().replace(/[\s\-]+/g,'_').replace(/[^a-z0-9_]/g,'')}
+function cleanObject(row){const out={};Object.entries(row||{}).forEach(([k,v])=>out[normKey(k)]=typeof v==='string'?v.trim():v);return out}
+function alias(row,names){for(const n of names){const k=normKey(n);if(row[k]!==undefined&&String(row[k]).trim()!=='')return row[k]}return ''}
+function boolValue(v,def=false){if(v===undefined||v===null||String(v).trim()==='')return def;return ['true','1','yes','y','published','publish'].includes(String(v).trim().toLowerCase())}
+function numberValue(v){if(v===undefined||v===null||String(v).trim()==='')return null;const n=Number(String(v).replace(/,/g,''));return Number.isFinite(n)?n:null}
+function relationId(type,value){
+ const v=String(value??'').trim(); if(!v)return null;
+ const source=type==='module'?rows.modules:type==='topic'?rows.topics:type==='author'?rows.authors:type==='work'?rows.works:type==='theorist'?rows.theorists:[];
+ const title=type==='work'?'title':'name';
+ const hit=source.find(x=>String(x.id)===v)||source.find(x=>String(x[title]??'').trim().toLowerCase()===v.toLowerCase());
+ return hit?.id||null;
+}
+function relationLabel(type,value){
+ const v=String(value??'').trim(); if(!v)return '';
+ const source=type==='module'?rows.modules:type==='topic'?rows.topics:type==='author'?rows.authors:type==='work'?rows.works:type==='theorist'?rows.theorists:[];
+ const title=type==='work'?'title':'name';
+ const hit=source.find(x=>String(x.id)===v)||source.find(x=>String(x[title]??'').trim().toLowerCase()===v.toLowerCase());
+ return hit?String(hit[title]):v;
+}
+function gameTypeValue(v){
+ const x=String(v??'').trim().toLowerCase();
+ const hit=gameTypes.find(g=>g.key===x||g.label.toLowerCase()===x||g.label.toLowerCase().replace(/[^a-z0-9]+/g,'_')===x);
+ return hit?.key||null;
+}
+function splitChoices(v){
+ const s=String(v??'').trim(); if(!s)return [];
+ return s.includes('\n')?s.split(/\r?\n/).map(x=>x.trim()).filter(Boolean):s.split('|').map(x=>x.trim()).filter(Boolean);
+}
+function parseBulkRecord(type,row,index){
+ const r=cleanObject(row), err=[];
+ const required=bulkSchemas[type].required;
+ for(const key of required){if(!String(alias(r,[key])).trim())err.push(`missing ${key}`)}
+ let payload={};
+ if(type==='modules')payload={name:alias(r,['name']),sort_order:numberValue(alias(r,['sort_order','order']))};
+ if(type==='topics'){
+   payload={module_id:relationId('module',alias(r,['module','module_name','module_id'])),name:alias(r,['name']),sort_order:numberValue(alias(r,['sort_order','order']))};
+   if(alias(r,['module','module_name','module_id'])&&!payload.module_id)err.push(`module not found: ${alias(r,['module','module_name','module_id'])}`);
+ }
+ if(type==='authors')payload={name:alias(r,['name']),birth_year:numberValue(alias(r,['birth_year','birth'])),death_year:numberValue(alias(r,['death_year','death'])),nationality:alias(r,['nationality']),biography:alias(r,['biography','bio']),notes:alias(r,['notes'])};
+ if(type==='works'){
+   const a=alias(r,['author','author_name','author_id']);payload={title:alias(r,['title']),author_id:relationId('author',a),publication_year:numberValue(alias(r,['publication_year','year'])),publication_date:alias(r,['publication_date','date']),genre:alias(r,['genre']),description:alias(r,['description']),notes:alias(r,['notes'])};
+   if(a&&!payload.author_id)err.push(`author not found: ${a}`);
+ }
+ if(type==='characters'){
+   const w=alias(r,['work','work_title','work_id']);payload={name:alias(r,['name']),work_id:relationId('work',w),description:alias(r,['description'])};if(w&&!payload.work_id)err.push(`work not found: ${w}`);
+ }
+ if(type==='theorists')payload={name:alias(r,['name']),description:alias(r,['description'])};
+ if(type==='theories'){
+   const t=alias(r,['theorist','theorist_name','theorist_id']);payload={name:alias(r,['name']),theorist_id:relationId('theorist',t),description:alias(r,['description']),key_terms:alias(r,['key_terms','keyterms'])};if(t&&!payload.theorist_id)err.push(`theorist not found: ${t}`);
+ }
+ if(type==='concepts')payload={name:alias(r,['name']),definition:alias(r,['definition']),notes:alias(r,['notes'])};
+ if(type==='learn_content'){
+   const t=alias(r,['topic','topic_name','topic_id']);payload={topic_id:relationId('topic',t),title:alias(r,['title']),body:alias(r,['body','content']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false)};if(t&&!payload.topic_id)err.push(`topic not found: ${t}`);
+ }
+ if(type==='quiz_questions'){
+   const t=alias(r,['topic','topic_name','topic_id']);
+   const opts=[alias(r,['option1','option_1','a','option_a']),alias(r,['option2','option_2','b','option_b']),alias(r,['option3','option_3','c','option_c']),alias(r,['option4','option_4','d','option_d'])];
+   if(!opts.some(Boolean))opts.push(...splitChoices(alias(r,['options'])));
+   while(opts.length<4)opts.push('');
+   const correctRaw=String(alias(r,['correct_answer','correct','answer','correct_option'])).trim();
+   let ci=-1;if(/^[1-4]$/.test(correctRaw))ci=Number(correctRaw)-1;else if(/^[a-d]$/i.test(correctRaw))ci=correctRaw.toLowerCase().charCodeAt(0)-97;else ci=opts.findIndex(x=>String(x).trim().toLowerCase()===correctRaw.toLowerCase());
+   payload={topic_id:relationId('topic',t),question:alias(r,['question','prompt']),explanation:alias(r,['explanation']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false),_options:opts.slice(0,4),_correct:ci};
+   if(t&&!payload.topic_id)err.push(`topic not found: ${t}`);if(payload._options.some(x=>!x))err.push('needs 4 options');if(ci<0||ci>3)err.push('correct_answer must be 1-4, A-D, or exact option text');
+ }
+ if(type==='flashcards'){
+   const t=alias(r,['topic','topic_name','topic_id']);payload={topic_id:relationId('topic',t),front:alias(r,['front','question']),back:alias(r,['back','answer']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false)};if(t&&!payload.topic_id)err.push(`topic not found: ${t}`);
+ }
+ if(type==='game_questions'){
+   const t=alias(r,['topic','topic_name','topic_id']),gt=gameTypeValue(alias(r,['game_type','game','category']));
+   payload={topic_id:relationId('topic',t),game_type:gt,prompt:alias(r,['prompt','question']),answer:alias(r,['answer','correct_answer']),choices:splitChoices(alias(r,['choices','options'])),explanation:alias(r,['explanation']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false)};
+   if(!gt)err.push('unknown game_type');if(t&&!payload.topic_id)err.push(`topic not found: ${t}`);if(payload.choices.length<2)err.push('needs at least 2 choices');if(payload.answer&&!payload.choices.includes(payload.answer))err.push('answer must exactly match one choice');
+ }
+ return {row:r,payload,error:err.join('; '),rowNumber:index+2};
+}
+function duplicateExists(type,payload){
+ const key=type==='works'?'title':type==='learn_content'?'title':type==='quiz_questions'?'question':type==='flashcards'?'front':type==='game_questions'?'prompt':'name';
+ const value=String(payload[key]??'').trim().toLowerCase(); if(!value)return false;
+ return (rows[type]||[]).some(x=>String(x[key]??'').trim().toLowerCase()===value);
+}
+async function previewBulkImport(){
+ const file=document.querySelector('#bulkFile').files?.[0],type=document.querySelector('#bulkType').value,msg=document.querySelector('#bulkMsg');
+ if(!file){msg.textContent='Choose a CSV or Excel file first.';return}
+ msg.textContent='Reading file…';
+ try{
+   const raw=await readBulkFile(file);bulkParsedRows=raw.map((r,i)=>parseBulkRecord(type,r,i));
+   const skip=document.querySelector('#bulkSkipDuplicates').checked;
+   const dupCount=bulkParsedRows.filter(x=>!x.error&&skip&&duplicateExists(type,x.payload)).length;
+   bulkPreview=bulkParsedRows.slice(0,12);
+   const valid=bulkParsedRows.filter(x=>!x.error).length,invalid=bulkParsedRows.length-valid;
+   renderBulkPreview(type,bulkParsedRows,valid,invalid,dupCount);
+   msg.textContent=`Loaded ${bulkParsedRows.length} row${bulkParsedRows.length===1?'':'s'} from ${bulkFileName}.`;
+ }catch(e){msg.textContent=`Could not read file: ${e.message}`}
+}
+function renderBulkPreview(type,data,valid,invalid,dupCount){
+ const card=document.querySelector('#bulkPreviewCard');card.style.display='block';
+ const schema=bulkSchemas[type];
+ card.innerHTML=`<div class="bulk-preview-head"><div><div class="eyebrow">STEP 3 · PREVIEW</div><h2>${schema.label}</h2><p>${data.length} rows loaded · <span class="good-text">${valid} valid</span> · <span class="bad-text">${invalid} invalid</span>${dupCount?` · ${dupCount} exact duplicate${dupCount===1?'':'s'} will be skipped`:''}</p></div><button class="btn" id="startBulkImport" ${valid?'':'disabled'}>Import ${valid} row${valid===1?'':'s'}</button></div>
+ <div class="bulk-errors">${data.filter(x=>x.error).slice(0,8).map(x=>`<div><strong>Row ${x.rowNumber}:</strong> ${esc(x.error)}</div>`).join('')||'<span>No validation errors in the preview.</span>'}</div>
+ <div class="table-wrap"><table class="table bulk-table"><thead><tr><th>Row</th><th>Preview</th><th>Topic / relation</th><th>Status</th></tr></thead><tbody>${data.slice(0,12).map(x=>{const p=x.payload;let title=p.question||p.prompt||p.title||p.name||p.front||'—';let rel=relationLabel('topic',p.topic_id)||relationLabel('author',p.author_id)||relationLabel('work',p.work_id)||'';return `<tr><td>${x.rowNumber}</td><td><strong>${esc(String(title).slice(0,180))}</strong></td><td>${esc(rel||'—')}</td><td>${x.error?`<span class="pill no">${esc(x.error)}</span>`:'<span class="pill ok">Ready</span>'}</td></tr>`}).join('')}</tbody></table></div>`;
+ document.querySelector('#startBulkImport')?.addEventListener('click',()=>runBulkImport(type));
+}
+async function runBulkImport(type){
+ const btn=document.querySelector('#startBulkImport'),msg=document.querySelector('#bulkMsg'),skip=document.querySelector('#bulkSkipDuplicates').checked;
+ if(!btn)return;btn.disabled=true;btn.textContent='Importing…';
+ const valid=bulkParsedRows.filter(x=>!x.error&&!((skip)&&duplicateExists(type,x.payload)));
+ let imported=0,skipped=bulkParsedRows.length-valid.length,failed=[];
+ const batch=type==='quiz_questions'?50:100;
+ for(let i=0;i<valid.length;i+=batch){
+   const chunk=valid.slice(i,i+batch);
+   if(type==='quiz_questions'){
+     const qRows=chunk.map(x=>{const p={...x.payload};delete p._options;delete p._correct;return p});
+     const qr=await sb.from('quiz_questions').insert(qRows).select('id');
+     if(qr.error){
+       for(const x of chunk){const p={...x.payload};const opts=p._options,ci=p._correct;delete p._options;delete p._correct;const one=await sb.from('quiz_questions').insert(p).select('id').single();if(one.error){failed.push(`Row ${x.rowNumber}: ${one.error.message}`);continue}const or=await sb.from('quiz_options').insert(opts.map((t,j)=>({question_id:one.data.id,option_text:t,is_correct:j===ci,sort_order:j})));if(or.error){failed.push(`Row ${x.rowNumber}: ${or.error.message}`);continue}imported++}
+     }else{
+       const options=[];qr.data.forEach((q,j)=>{const x=chunk[j],p=x.payload;x.payload._options.forEach((t,k)=>options.push({question_id:q.id,option_text:t,is_correct:k===p._correct,sort_order:k}))});
+       const or=await sb.from('quiz_options').insert(options);if(or.error){failed.push(`Quiz options batch: ${or.error.message}`);}
+       else imported+=chunk.length;
+     }
+   }else{
+     const clean=chunk.map(x=>x.payload);
+     const r=await sb.from(type).insert(clean);
+     if(r.error){for(const x of chunk){const one=await sb.from(type).insert(x.payload);if(one.error)failed.push(`Row ${x.rowNumber}: ${one.error.message}`);else imported++}}
+     else imported+=chunk.length;
+   }
+   msg.textContent=`Imported ${imported} of ${valid.length} rows…`;
+ }
+ await loadRelations();
+ const card=document.querySelector('#bulkPreviewCard');
+ card.querySelector('.bulk-preview-head').innerHTML=`<div><div class="eyebrow">IMPORT COMPLETE</div><h2>${imported} imported</h2><p>${skipped} skipped · ${failed.length} failed</p></div><button class="btn secondary" id="newBulkImport">Import another file</button>`;
+ card.querySelector('.bulk-errors').innerHTML=failed.length?failed.slice(0,20).map(x=>`<div>${esc(x)}</div>`).join(''):'<span>Everything else imported successfully.</span>';
+ document.querySelector('#newBulkImport').onclick=()=>renderBulkImport(document.querySelector('#panel'));
+ renderMetrics();
+}
+function downloadBulkTemplate(type){
+ const s=bulkSchemas[type||document.querySelector('#bulkType')?.value||'quiz_questions'];
+ const sample={};s.headers.forEach(h=>sample[h]='');
+ if(type==='quiz_questions'||(!type&&document.querySelector('#bulkType')?.value==='quiz_questions')){Object.assign(sample,{question:'Example question',option1:'Option A',option2:'Option B',option3:'Option C',option4:'Option D',correct_answer:'A',published:'false'});}
+ if((type||document.querySelector('#bulkType')?.value)==='game_questions')Object.assign(sample,{game_type:'author_work',prompt:'Example prompt',answer:'Correct answer',choices:'Choice 1|Choice 2|Choice 3|Choice 4',published:'false'});
+ const ws=XLSX.utils.json_to_sheet([sample]);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Import');XLSX.writeFile(wb,`stupidification_${type||document.querySelector('#bulkType')?.value}_template.xlsx`);
 }
 
 function showModal(title,body){const m=document.querySelector('#modal');m.innerHTML=`<div class="modal-box"><div class="modal-head"><div><div class="eyebrow">CONTENT EDITOR</div><h2>${esc(title)}</h2></div><button class="close" id="x">×</button></div>${body}</div>`;m.classList.add('open');document.querySelector('#x').onclick=closeModal;document.querySelector('#cancel')?.addEventListener('click',closeModal)}
