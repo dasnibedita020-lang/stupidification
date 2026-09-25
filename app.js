@@ -1,338 +1,379 @@
-/* STUPIDIFICATION v0.6 — Supabase-backed frontend + fixed UUID routing */
-const SUPABASE_URL='https://crndztiqvghsvtbprsrn.supabase.co';
-const SUPABASE_KEY='sb_publishable_xXimMadw55KUp9KEglRc9Q_J1lnZ513';
+/* STUPIDIFICATION V2
+   Supabase-backed literature learning site.
+   Existing public tables used:
+   modules, topics, learn_content, quiz_questions, quiz_options,
+   flashcards, authors, works, characters, theories, theorists,
+   concepts, game_questions.
+*/
+const SUPABASE_URL="https://crndztiqvghsvtbprsrn.supabase.co";
+const SUPABASE_KEY="sb_publishable_xXimMadw55KUp9KEglRc9Q_J1lnZ513";
 const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+const app=document.querySelector("#app");
 
-const app=document.querySelector('#app');
-let route=location.hash.slice(1)||'home';
-let modules=[],topics=[],quizData=[],cardsData=[],authorsData=[],worksData=[],theoriesData=[],theoristsData=[],conceptsData=[];
-let state=JSON.parse(localStorage.getItem('stupidificationState')||'null')||{quizAttempts:0,quizCorrect:0,wrong:[],cardRatings:{},gamesPlayed:0};
-let quizQueue=[],quizIndex=0,currentQuiz=null,quizAnswered=false,cardQueue=[],cardIndex=0,cardFlipped=false,gamePairs=[],gameSelected=null,gameMatched=[];
+let route=location.hash.slice(1)||"home";
+let modules=[],topics=[],learnData=[],quizData=[],cardsData=[],authors=[],works=[],theories=[],theorists=[],concepts=[],gameQuestions=[];
+let state=JSON.parse(localStorage.getItem("stupidificationV2")||"null")||{
+  quizAttempts:0,quizCorrect:0,wrongIds:[],cardRatings:{},gamesPlayed:0
+};
+let quizDeck=[],quizPos=0,quizStats={right:0,wrong:0},quizTimer=null,quizStarted=0;
+let gameDeck=[],gamePos=0,gameStats={right:0,wrong:0},gameTimer=null,gameStarted=0;
+let cardDeck=[],cardPos=0,cardTopic=null;
 
-const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&#38;','<':'&#60;','>':'&#62;',"'":'&#39;','"':'&#34;'}[c]));
-const save=()=>localStorage.setItem('stupidificationState',JSON.stringify(state));
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const save=()=>localStorage.setItem("stupidificationV2",JSON.stringify(state));
 const shuffle=a=>[...a].sort(()=>Math.random()-.5);
-const shell=(head,sub)=>`<section class="page-head"><div class="eyebrow">STUPIDIFICATION · ${head.toUpperCase()}</div><h1 class="page-title">${head}</h1><p class="page-intro">${sub}</p></section>`;
-function setActive(){document.querySelectorAll('[data-route]').forEach(a=>a.classList.toggle('active',a.dataset.route===route.split('-')[0]))}
-function feature(tag,title,text,href){return `<a class="card" href="${href}" style="text-decoration:none;color:inherit"><span class="tag">${tag}</span><h2>${title}</h2><p>${text}</p><span class="arrow">Open →</span></a>`}
+const feature=(tag,title,desc,href)=>`<a class="card card-link" href="${href}"><span class="tag">${tag}</span><h2>${title}</h2><p>${desc}</p><span class="arrow">Open →</span></a>`;
+const shell=(title,intro)=>`<section class="page-head"><div class="eyebrow">STUPIDIFICATION · ${esc(title)}</div><h1 class="page-title">${esc(title)}</h1><p class="intro">${intro}</p></section>`;
+const statBox=(label,value,cls="")=>`<div class="quiz-stat ${cls}"><span>${label}</span><strong>${value}</strong></div>`;
 
-function home(){
- app.innerHTML=`<section class="hero"><div class="hero-copy"><div class="eyebrow">ENGLISH LITERATURE · LEARNING SYSTEM</div><h1>Stop memorising.<br><em>Start connecting.</em></h1><p>Choose one thing. Learn it clearly. Test it. Play with it. Come back to what you forgot. STUPIDIFICATION is an adaptive literature-learning system built for students who are tired of drowning in disconnected facts.</p><div class="hero-actions"><a class="btn" href="#learn">Start learning</a><a class="btn secondary" href="#quiz">Take a quiz</a></div></div></section><div class="flower-line"></div><div class="grid">${feature('LEARN','Knowledge building','Move from module → topic → concept with the same database powering practice.','#learn')}${feature('QUIZ','Test yourself','Four options, instant explanations and randomized practice.','#quiz')}${feature('FLASHCARDS','Remember','Rate cards Hard, Good or Easy so repetition can adapt.','#flashcards')}${feature('GAMES','Play with literature','Match authors, works, dates and theories.','#games')}${feature('EXPLORE','Connect the dots','Search the growing knowledge graph of literature and theory.','#explore')}${feature('PROGRESS','See what you know','Track your practice now; cloud progress will follow with accounts.','#progress')}</div>`
+function setActive(){
+  document.querySelectorAll("[data-route]").forEach(a=>{
+    a.classList.toggle("active",a.dataset.route===route.split("-")[0]);
+  });
 }
+function stopTimer(type){
+  if(type==="quiz"&&quizTimer){clearInterval(quizTimer);quizTimer=null}
+  if(type==="game"&&gameTimer){clearInterval(gameTimer);gameTimer=null}
+}
+function timerText(start){return `${Math.floor((Date.now()-start)/1000)}s`}
 
 async function loadData(){
- const [m,t,q,f,a,w,th,ty,c]=await Promise.all([
-  sb.from('modules').select('*').order('sort_order'),
-  sb.from('topics').select('*').order('sort_order'),
-  sb.from('quiz_questions').select('*, quiz_options(*)').eq('published',true),
-  sb.from('flashcards').select('*').eq('published',true),
-  sb.from('authors').select('*').order('name'),
-  sb.from('works').select('*, authors(name)').order('title'),
-  sb.from('theories').select('*, theorists(name)').order('name'),
-  sb.from('theorists').select('*').order('name'),
-  sb.from('concepts').select('*').order('name')
- ]);
- modules=m.data||[]; topics=t.data||[]; quizData=q.data||[]; cardsData=f.data||[];
- authorsData=a.data||[]; worksData=w.data||[]; theoriesData=th.data||[];
- theoristsData=ty.data||[]; conceptsData=c.data||[];
+  const results=await Promise.all([
+    sb.from("modules").select("*").order("sort_order"),
+    sb.from("topics").select("*").order("sort_order"),
+    sb.from("learn_content").select("*").eq("published",true),
+    sb.from("quiz_questions").select("*, quiz_options(*)").eq("published",true),
+    sb.from("flashcards").select("*").eq("published",true),
+    sb.from("authors").select("*").order("name"),
+    sb.from("works").select("*, authors(name)").order("title"),
+    sb.from("theories").select("*, theorists(name)").order("name"),
+    sb.from("theorists").select("*").order("name"),
+    sb.from("concepts").select("*").order("name"),
+    sb.from("game_questions").select("*").eq("published",true)
+  ]);
+  [modules,topics,learnData,quizData,cardsData,authors,works,theories,theorists,concepts,gameQuestions]=results.map(x=>x.data||[]);
 }
 
-/* ---------- LEARN ---------- */
+/* HOME */
+function home(){
+  app.innerHTML=`<section class="hero"><div><div class="eyebrow">ENGLISH LITERATURE · ADAPTIVE LEARNING</div>
+  <h1>Stop memorising.<br><em>Start connecting.</em></h1>
+  <p>STUPIDIFICATION V2 turns literature study into a system: learn a topic, test yourself, see why an answer is right, and make difficult questions come back until they stick.</p>
+  <div class="actions"><a class="btn" href="#learn">Start learning</a><a class="btn secondary" href="#quiz">Take a quiz</a></div></div></section>
+  <div class="grid">
+    ${feature("LEARN","Knowledge building","Move from module → topic → learning content.","#learn")}
+    ${feature("QUIZ","Adaptive quiz","Answer, read the explanation, then choose Easy or Hard.","#quiz")}
+    ${feature("FLASHCARDS","Active recall","Flip cards and rate them so difficult cards return more often.","#flashcards")}
+    ${feature("GAMES","Literature games","Practice authors, works, dates, chronology and theory.","#games")}
+    ${feature("EXPLORE","Knowledge graph","Open individual author pages and browse connected works.","#explore")}
+    ${feature("PROGRESS","Your practice","See accuracy, repeated questions and study activity.","#progress")}
+  </div>`;
+}
+
+/* LEARN */
 function learn(){
- app.innerHTML=shell('Learn','Choose a module, then a topic. The same taxonomy powers learning, practice and games.');
- app.innerHTML+=`<div class="grid">${modules.map((m,i)=>`<a class="card" href="#learn-${encodeURIComponent(m.id)}" style="text-decoration:none;color:inherit"><span class="tag">MODULE ${String(i+1).padStart(2,'0')}</span><h2>${esc(m.name)}</h2><p>${topics.filter(t=>t.module_id===m.id).length} topics</p><span class="arrow">Browse topics →</span></a>`).join('')}</div>`
+  app.innerHTML=shell("Learn","Choose a module, then a topic. The same taxonomy powers learning and practice.");
+  app.innerHTML+=`<div class="grid">${modules.map((m,i)=>feature(`MODULE ${String(i+1).padStart(2,"0")}`,m.name,`${topics.filter(t=>t.module_id===m.id).length} topics`,`#learn-module-${encodeURIComponent(m.id)}`)).join("")}</div>`;
 }
 function learnModule(id){
- const m=modules.find(x=>x.id===id);
- if(!m)return learn();
- const ts=topics.filter(t=>t.module_id===id);
- app.innerHTML=shell(m.name,'Choose a topic. Knowledge pages will contain explanations, key terms, authors, works, examples and related concepts.');
- app.innerHTML+=`<div class="grid">${ts.map((t,i)=>`<a class="card" href="#learn-topic-${encodeURIComponent(t.id)}" style="text-decoration:none;color:inherit"><span class="tag">TOPIC ${String(i+1).padStart(2,'0')}</span><h2>${esc(t.name)}</h2><p>Knowledge building · quiz · cards · games</p><span class="arrow">Open topic →</span></a>`).join('')}</div>`
+  const m=modules.find(x=>x.id===id);if(!m)return learn();
+  const ts=topics.filter(x=>x.module_id===id);
+  app.innerHTML=shell(m.name,"Choose a topic.");
+  app.innerHTML+=`<a class="back" href="#learn">← All modules</a><div class="grid">${ts.map(t=>feature("TOPIC",t.name,"Open learning content",`#learn-topic-${encodeURIComponent(t.id)}`)).join("")}</div>`;
 }
 function learnTopic(id){
- const t=topics.find(x=>x.id===id);
- if(!t){learn();return}
- const contents=window.learnCache?.filter(x=>x.topic_id===id)||[];
- app.innerHTML=shell(t.name,'Learn the concept, then test and review it.');
- app.innerHTML+=contents.length
-  ? contents.map(x=>`<article class="card"><span class="tag">LEARN</span><h2>${esc(x.title)}</h2><p>${esc(x.body).replaceAll('\n','<br>')}</p>${x.source?`<p><small>Source: ${esc(x.source)}</small></p>`:''}</article>`).join('')
-  : `<div class="empty"><strong>No learning content here yet.</strong><p>This topic is ready for content. Add it from the admin panel.</p><a class="btn" href="#quiz-category-${encodeURIComponent(t.module_id)}">Practice instead</a></div>`
+  const t=topics.find(x=>x.id===id);if(!t)return learn();
+  const content=learnData.filter(x=>x.topic_id===id);
+  app.innerHTML=shell(t.name,"Read the material, then use Quiz or Flashcards to practise it.");
+  app.innerHTML+=`<a class="back" href="#learn-module-${encodeURIComponent(t.module_id)}">← Back to topics</a>`;
+  app.innerHTML+=content.length?`<div class="grid">${content.map(x=>`<article class="card"><span class="tag">LEARN</span><h2>${esc(x.title)}</h2><p>${esc(x.body).replaceAll("\n","<br>")}</p>${x.source?`<p><small>Source: ${esc(x.source)}</small></p>`:""}</article>`).join("")}</div>`:`<div class="empty"><strong>No learning content yet.</strong><p>Add published content from Admin.</p></div>`;
 }
 
-/* ---------- QUIZ / FLASHCARDS ---------- */
-function topicCards(mode){
- app.innerHTML=shell(mode==='quiz'?'Quiz':'Flashcards',`Choose a module and topic. ${mode==='quiz'?'Questions are randomized and missed questions return in the session.':'Cards are shuffled and weighted by difficulty.'}`);
- app.innerHTML+=`<div class="grid">${modules.map(m=>`<a class="card" href="#${mode}-category-${encodeURIComponent(m.id)}" style="text-decoration:none;color:inherit"><span class="tag">MODULE</span><h2>${esc(m.name)}</h2><p>${topics.filter(t=>t.module_id===m.id).length} topics</p><span class="arrow">Choose topic →</span></a>`).join('')}</div>`
+/* QUIZ */
+function quiz(){
+  app.innerHTML=shell("Quiz","Choose a module and topic. Every question gives you an explanation and lets you decide whether it felt Easy or Hard.");
+  app.innerHTML+=`<div class="grid">${modules.map(m=>feature("MODULE",m.name,`${topics.filter(t=>t.module_id===m.id).length} topics`,`#quiz-module-${encodeURIComponent(m.id)}`)).join("")}</div>`;
 }
-function topicCategory(mode,id){
- const m=modules.find(x=>x.id===id);
- if(!m)return topicCards(mode);
- const ts=topics.filter(t=>t.module_id===id);
- app.innerHTML=shell(`${mode==='quiz'?'Quiz':'Flashcards'} · ${m.name}`,'Choose a topic.');
- app.innerHTML+=`<div class="grid">${ts.map(t=>`<a class="card" href="#${mode}-topic-${encodeURIComponent(t.id)}" style="text-decoration:none;color:inherit"><span class="tag">TOPIC</span><h2>${esc(t.name)}</h2><p>${mode==='quiz'?'Start quiz →':'Start flashcards →'}</p></a>`).join('')}</div>`
+function quizModule(id){
+  const m=modules.find(x=>x.id===id);if(!m)return quiz();
+  const ts=topics.filter(x=>x.module_id===id);
+  app.innerHTML=shell(`Quiz · ${m.name}`,"Choose a topic.");
+  app.innerHTML+=`<a class="back" href="#quiz">← All modules</a><div class="grid">${ts.map(t=>feature("TOPIC",t.name,"Start adaptive quiz",`#quiz-topic-${encodeURIComponent(t.id)}`)).join("")}</div>`;
 }
-function selectedTopic(mode,tid){
- const t=topics.find(x=>x.id===tid);
- if(!t){topicCards(mode);return}
- if(mode==='quiz')startQuiz(t);else prepareCards(t);
+function startQuiz(topicId){
+  stopTimer("quiz");
+  const usable=quizData.filter(q=>q.topic_id===topicId).map(q=>({
+    ...q,options:(q.quiz_options||[]).map(o=>o.option_text),
+    answer:(q.quiz_options||[]).find(o=>o.is_correct)?.option_text||"",
+    explanation:q.explanation||"No explanation has been added yet."
+  }));
+  quizDeck=shuffle(usable);quizPos=0;quizStats={right:0,wrong:0};renderQuiz(topicId);
 }
-function startQuiz(topic){
- const usable=quizData.filter(q=>q.topic_id===topic.id).map(q=>({...q,topic:topic.name,o:(q.quiz_options||[]).map(x=>x.option_text),a:(q.quiz_options||[]).find(x=>x.is_correct)?.option_text,e:q.explanation||''}));
- const wrong=usable.filter(q=>state.wrong.includes(q.id));
- quizQueue=shuffle([...usable,...wrong]);quizIndex=0;quizAnswered=false;renderQuiz(topic);
+function renderQuiz(topicId){
+  const topic=topics.find(t=>t.id===topicId);
+  if(!quizDeck.length){app.innerHTML=shell("Quiz",topic?.name||"Topic")+`<div class="empty">No published questions are available for this topic.</div>`;return}
+  const q=quizDeck[quizPos];
+  const options=shuffle(q.options);
+  app.innerHTML=shell(`Quiz · ${topic?.name||""}`,"Answer first. Then read the explanation and rate the question.");
+  app.innerHTML+=`<div class="quiz-wrap">
+    <div class="quiz-dashboard">
+      ${statBox("RIGHT",quizStats.right,"right")}${statBox("WRONG",quizStats.wrong,"wrong")}${statBox("TIME","0s")}
+    </div>
+    <div class="quiz-meta"><span>Question ${quizPos+1}</span><span>${quizDeck.length} in current deck</span></div>
+    <h2 class="quiz-question">${esc(q.question)}</h2>
+    <div class="options">${options.map(o=>`<button class="option" data-answer="${esc(o)}">${esc(o)}</button>`).join("")}</div>
+    <div id="quizFeedback"></div>
+  </div>`;
+  quizStarted=Date.now();
+  quizTimer=setInterval(()=>{const boxes=document.querySelectorAll(".quiz-stat strong");if(boxes[2])boxes[2].textContent=timerText(quizStarted)},1000);
+  document.querySelectorAll(".option").forEach(b=>b.onclick=()=>answerQuiz(b,q,topicId));
 }
-function renderQuiz(topic){
- if(!quizQueue.length){app.innerHTML=shell('Quiz',topic.name)+`<div class="empty"><strong>No quiz questions here yet.</strong><p>Add published questions for this topic from Admin.</p></div>`;return}
- currentQuiz=quizQueue[quizIndex%quizQueue.length];
- const opts=shuffle(currentQuiz.o);
- app.innerHTML=shell('Quiz',`${esc(topic.name)} · Four-option practice.`)+`<div class="quiz-wrap"><div class="quiz-meta"><span>${quizIndex+1} / ${quizQueue.length}</span><span>${esc(topic.name)}</span></div><h2 class="quiz-question">${esc(currentQuiz.question)}</h2><div class="options">${opts.map(o=>`<button class="option" data-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div><div id="quizFeedback"></div></div>`;
- document.querySelectorAll('.option').forEach(b=>b.onclick=()=>answerQuiz(b,currentQuiz,topic))
+function answerQuiz(btn,q,topicId){
+  if(!quizTimer)return;
+  stopTimer("quiz");
+  const correct=btn.dataset.answer===q.answer;
+  if(correct){quizStats.right++;state.quizCorrect++}else{quizStats.wrong++;if(!state.wrongIds.includes(q.id))state.wrongIds.push(q.id)}
+  state.quizAttempts++;save();
+  document.querySelectorAll(".option").forEach(b=>{b.disabled=true;if(b.dataset.answer===q.answer)b.classList.add("correct")});
+  if(!correct)btn.classList.add("wrong");
+  const feedback=document.querySelector("#quizFeedback");
+  feedback.innerHTML=`<div class="feedback"><strong>${correct?"✓ Correct":"✗ Not quite"}</strong><p>${esc(q.explanation)}</p>
+    <div class="rating-row"><button class="rating" id="quizEasy">Easy · next</button><button class="rating" id="quizHard">Hard · repeat later</button></div></div>`;
+  document.querySelector("#quizEasy").onclick=()=>nextQuiz(topicId,false);
+  document.querySelector("#quizHard").onclick=()=>nextQuiz(topicId,true);
 }
-async function answerQuiz(btn,q,topic){
- if(quizAnswered)return;
- quizAnswered=true;
- const chosen=btn.dataset.answer,correct=chosen===q.a;
- state.quizAttempts++;
- if(correct)state.quizCorrect++;else if(!state.wrong.includes(q.id))state.wrong.push(q.id);
- save();
- document.querySelectorAll('.option').forEach(b=>{b.disabled=true;if(b.dataset.answer===q.a)b.classList.add('correct')});
- if(!correct)btn.classList.add('wrong');
- app.querySelector('#quizFeedback').innerHTML=`<div class="feedback"><strong>${correct?'✓ Correct':'✗ Not quite'}</strong><p>${esc(q.e)}</p><button class="btn" id="nextQuiz">${quizIndex+1===quizQueue.length?'New round':'Next question →'}</button></div>`;
- document.querySelector('#nextQuiz').onclick=()=>{quizIndex++;quizAnswered=false;if(quizIndex>=quizQueue.length)startQuiz(topic);else renderQuiz(topic)}
+function nextQuiz(topicId,hard){
+  if(hard)quizDeck.push(quizDeck[quizPos]);
+  quizPos++;
+  if(quizPos>=quizDeck.length)finishQuiz(topicId);else renderQuiz(topicId);
 }
-function prepareCards(topic){
- const base=cardsData.filter(c=>c.topic_id===topic.id),weighted=[];
- base.forEach(c=>{const r=state.cardRatings[c.id]||'new',w=r==='hard'?4:r==='good'?2:r==='easy'?1:3;for(let i=0;i<w;i++)weighted.push(c)});
- cardQueue=shuffle(weighted);cardIndex=0;cardFlipped=false;renderCard(topic);
+function finishQuiz(topicId){
+  stopTimer("quiz");
+  const total=quizStats.right+quizStats.wrong,accuracy=total?Math.round(quizStats.right/total*100):0;
+  const topic=topics.find(t=>t.id===topicId);
+  app.innerHTML=shell("Quiz complete",topic?.name||"Round");
+  app.innerHTML+=`<div class="completion"><span class="tag">ROUND COMPLETE</span><h2>You finished the deck.</h2>
+    <div class="completion-stats">${statBox("RIGHT",quizStats.right,"right")}${statBox("WRONG",quizStats.wrong,"wrong")}<div><strong>${accuracy}%</strong><span>Accuracy</span></div></div>
+    <button class="btn" id="again">Start again</button></div>`;
+  document.querySelector("#again").onclick=()=>startQuiz(topicId);
 }
-function renderCard(topic){
- if(!cardQueue.length){app.innerHTML=shell('Flashcards',topic.name)+`<div class="empty"><strong>No flashcards here yet.</strong><p>Add published cards for this topic from Admin.</p></div>`;return}
- const c=cardQueue[cardIndex%cardQueue.length];
- app.innerHTML=shell('Flashcards',`${esc(topic.name)} · Flip, then rate the card.`)+`<div class="flash-wrap"><div class="quiz-meta"><span>Card ${cardIndex+1} / ${cardQueue.length}</span><span>${esc(topic.name)}</span></div><div class="flashcard ${cardFlipped?'flipped':''}" id="flashcard"><div class="flash-inner"><div class="flash-content">${cardFlipped?`<strong>${esc(c.back)}</strong>`:`<strong>${esc(c.front)}</strong><span class="flash-hint">Tap to reveal</span>`}</div></div></div>${cardFlipped?`<div class="rating-row"><button class="rating" data-rate="hard">Hard · show again</button><button class="rating" data-rate="good">Good</button><button class="rating" data-rate="easy">Easy</button></div>`:''}</div>`;
- document.querySelector('#flashcard').onclick=()=>{cardFlipped=!cardFlipped;renderCard(topic)};
- document.querySelectorAll('.rating').forEach(b=>b.onclick=()=>rateCard(c,b.dataset.rate,topic))
-}
-function rateCard(c,r,topic){state.cardRatings[c.id]=r;save();cardIndex++;cardFlipped=false;if(cardIndex>=cardQueue.length)prepareCards(topic);else renderCard(topic)}
 
-/* ---------- GAMES ---------- */
-function games(){app.innerHTML=shell('Games','Choose a game. Each round is randomized and draws from the same database.');app.innerHTML+=`<div class="grid">${feature('MATCH','Author ↔ Work','Connect writers with their works.','#game-match')}${feature('MATCH','Work ↔ Date','Match works with publication dates.','#game-date')}${feature('ORDER','Chronology','Arrange works from earliest to latest.','#game-chronology')}${feature('MATCH','Theory ↔ Theorist','Connect theories with their key thinkers.','#game-theory')}</div>`}
-function gameMatch(kind){const source=worksData.filter(w=>w.publication_year).slice(0,8);const pairs=shuffle(source).map((w,i)=>({id:String(i),left:kind==='date'?w.title:(w.authors?.name||'Unknown'),right:kind==='date'?String(w.publication_year):w.title}));gamePairs=shuffle(pairs.flatMap(p=>[{id:p.id,side:'left',text:p.left},{id:p.id,side:'right',text:p.right}]));gameSelected=null;gameMatched=[];state.gamesPlayed++;save();renderMatchGame(kind,pairs)}
-function renderMatchGame(kind,pairs){app.innerHTML=shell(kind==='date'?'Work ↔ Date':'Author ↔ Work','Click two tiles to match them.')+`<div class="game-score">Matched <strong>${gameMatched.length}</strong> / ${pairs.length}</div><div class="game-board">${gamePairs.map((x,i)=>`<button class="game-tile ${gameMatched.includes(x.id)?'matched':''} ${gameSelected===i?'selected':''}" data-i="${i}">${esc(x.text)}</button>`).join('')}</div>`;document.querySelectorAll('.game-tile').forEach(b=>b.onclick=()=>matchClick(+b.dataset.i,pairs,kind))}
-function matchClick(i,pairs,kind){if(gameMatched.includes(gamePairs[i].id))return;if(gameSelected===null){gameSelected=i;renderMatchGame(kind,pairs);return}const a=gamePairs[gameSelected],b=gamePairs[i];if(a.id===b.id&&a.side!==b.side)gameMatched.push(a.id);gameSelected=null;renderMatchGame(kind,pairs)}
-function chronology(){const items=shuffle(worksData.filter(w=>w.publication_year).slice(0,5));let selected=[];app.innerHTML=shell('Chronology','Click the works in chronological order.');app.innerHTML+=`<div class="card"><p>Selected order: <span id="selectedOrder">—</span></p><div class="grid">${items.map((x,i)=>`<button class="game-tile" data-i="${i}">${esc(x.title)}<br><small>${x.publication_year}</small></button>`).join('')}</div><div id="chronoResult"></div></div>`;document.querySelectorAll('.game-tile').forEach(b=>b.onclick=()=>{const i=+b.dataset.i;if(selected.includes(i))return;selected.push(i);b.classList.add('selected');document.querySelector('#selectedOrder').textContent=selected.map(i=>items[i].title).join(' → ');if(selected.length===items.length){const years=selected.map(i=>items[i].publication_year);const ok=years.every((v,j)=>j===0||v>=years[j-1]);document.querySelector('#chronoResult').innerHTML=`<div class="feedback"><strong>${ok?'✓ Correct chronology':'✗ Try again'}</strong><p>${ok?'Excellent.':'The order runs from earliest to latest publication year.'}</p><button class="btn" onclick="location.hash='game-chronology'">New round</button></div>`}})}
-function gameTheory(){const pairs=shuffle(theoriesData.filter(x=>x.theorist_id&&x.theorists).slice(0,8));app.innerHTML=shell('Theory ↔ Theorist','The database now supplies theories and theorists. A richer game interface will expand from these records.');app.innerHTML+=pairs.length?`<div class="grid">${pairs.map(x=>`<div class="card"><span class="tag">THEORY</span><h2>${esc(x.name)}</h2><p>${esc(x.theorists.name)}</p></div>`).join('')}`:`<div class="empty">Add theories and theorists from Admin to populate this game.</div>`}
+/* FLASHCARDS */
+function flashcards(){
+  app.innerHTML=shell("Flashcards","Choose a topic. Cards you rate Hard appear more frequently.");
+  app.innerHTML+=`<div class="grid">${modules.map(m=>feature("MODULE",m.name,"Choose a topic",`#cards-module-${encodeURIComponent(m.id)}`)).join("")}</div>`;
+}
+function cardsModule(id){
+  const m=modules.find(x=>x.id===id);if(!m)return flashcards();
+  const ts=topics.filter(x=>x.module_id===id);
+  app.innerHTML=shell(`Flashcards · ${m.name}`,"Choose a topic.");
+  app.innerHTML+=`<a class="back" href="#flashcards">← All modules</a><div class="grid">${ts.map(t=>feature("TOPIC",t.name,"Start flashcards",`#cards-topic-${encodeURIComponent(t.id)}`)).join("")}</div>`;
+}
+function startCards(topicId){
+  cardTopic=topics.find(t=>t.id===topicId);
+  const base=cardsData.filter(c=>c.topic_id===topicId),weighted=[];
+  base.forEach(c=>{const r=state.cardRatings[c.id]||"new";const n=r==="hard"?4:r==="good"?2:1;for(let i=0;i<n;i++)weighted.push(c)});
+  cardDeck=shuffle(weighted);cardPos=0;renderCard();
+}
+function renderCard(){
+  if(!cardDeck.length){app.innerHTML=shell("Flashcards",cardTopic?.name||"Topic")+`<div class="empty">No published flashcards are available for this topic.</div>`;return}
+  const c=cardDeck[cardPos];
+  app.innerHTML=shell(`Flashcards · ${cardTopic.name}`,"Tap the card to reveal the answer.");
+  app.innerHTML+=`<div class="flashcard"><div class="flash-inner" id="flash">${cardPos%2===0?`<div><strong>${esc(c.front)}</strong><span class="flash-hint">Click to reveal</span></div>`:`<div><strong>${esc(c.back)}</strong><span class="flash-hint">Answer · click to continue</span></div>`}</div></div>`;
+  let revealed=cardPos%2!==0;
+  document.querySelector("#flash").onclick=()=>{
+    if(!revealed){revealed=true;document.querySelector("#flash").innerHTML=`<div><strong>${esc(c.back)}</strong><span class="flash-hint">Answer</span></div>`;addRatings(c)}
+  };
+  if(revealed)addRatings(c);
+}
+function addRatings(c){
+  if(document.querySelector("#cardRatings"))return;
+  const div=document.createElement("div");div.id="cardRatings";div.className="rating-row center";
+  div.innerHTML=`<button class="rating" data-r="hard">Hard · again</button><button class="rating" data-r="good">Good</button><button class="rating" data-r="easy">Easy</button>`;
+  document.querySelector(".flashcard").after(div);
+  div.querySelectorAll("button").forEach(b=>b.onclick=()=>{state.cardRatings[c.id]=b.dataset.r;save();cardPos++;if(cardPos>=cardDeck.length)startCards(cardTopic.id);else renderCard()});
+}
 
-/* ---------- EXPLORE / PROGRESS ---------- */
+/* GAMES */
+function games(){
+  app.innerHTML=shell("Games","Every game uses an adaptive deck. Hard questions return later; Easy questions leave the deck.");
+  app.innerHTML+=`<div class="grid">
+    ${feature("MATCH","Author ↔ Work","Connect an author to a work.","#game-author_work")}
+    ${feature("MATCH","Character ↔ Work","Connect a character to its work.","#game-character_work")}
+    ${feature("MATCH","Work ↔ Date","Match a work to its publication date.","#game-work_date")}
+    ${feature("ORDER","Chronology","Put works in chronological order.","#game-chronology")}
+    ${feature("THEORY","Theory ↔ Theorist","Identify the thinker associated with a theory.","#game-theory")}
+  </div>`;
+}
+function buildTheoryQuestions(){
+  return shuffle(theories.filter(t=>t.theorists?.name)).map((t,i)=>{
+    const correct=t.theorists.name;
+    const distractors=shuffle(theorists.filter(x=>x.name!==correct)).slice(0,3).map(x=>x.name);
+    return {id:`theory-${i}`,game_type:"theory",prompt:`Who is associated with the theory "${t.name}"?`,answer:correct,choices:shuffle([correct,...distractors]),explanation:t.description||""};
+  });
+}
+function startGame(kind){
+  stopTimer("game");gameStats={right:0,wrong:0};gamePos=0;
+  let pool=gameQuestions.filter(q=>q.game_type===kind);
+  if(kind==="theory"&&!pool.length)pool=buildTheoryQuestions();
+  gameDeck=shuffle(pool);renderGame(kind);
+}
+function renderGame(kind){
+  const labels={author_work:"Author ↔ Work",character_work:"Character ↔ Work",work_date:"Work ↔ Date",chronology:"Chronology",theory:"Theory ↔ Theorist"};
+  if(!gameDeck.length){app.innerHTML=shell(labels[kind]||"Game","Game");app.innerHTML+=`<div class="empty">No published game questions are available yet.</div>`;return}
+  const q=gameDeck[gamePos],choices=Array.isArray(q.choices)?shuffle(q.choices):[];
+  app.innerHTML=shell(labels[kind]||"Game","Answer, read the explanation, then decide whether the question is Easy or Hard.");
+  app.innerHTML+=`<div class="quiz-wrap"><div class="quiz-dashboard">${statBox("RIGHT",gameStats.right,"right")}${statBox("WRONG",gameStats.wrong,"wrong")}${statBox("TIME","0s")}</div>
+    <div class="quiz-meta"><span>Question ${gamePos+1}</span><span>${gameDeck.length} in current deck</span></div>
+    <h2 class="quiz-question">${esc(q.prompt||q.question||"")}</h2>
+    <div class="options">${choices.map(o=>`<button class="option" data-answer="${esc(o)}">${esc(o)}</button>`).join("")}</div><div id="gameFeedback"></div></div>`;
+  gameStarted=Date.now();gameTimer=setInterval(()=>{const boxes=document.querySelectorAll(".quiz-stat strong");if(boxes[2])boxes[2].textContent=timerText(gameStarted)},1000);
+  document.querySelectorAll(".option").forEach(b=>b.onclick=()=>answerGame(b,q,kind));
+}
+function answerGame(btn,q,kind){
+  if(!gameTimer)return;stopTimer("game");
+  const correct=btn.dataset.answer===q.answer;if(correct)gameStats.right++;else gameStats.wrong++;
+  document.querySelectorAll(".option").forEach(b=>{b.disabled=true;if(b.dataset.answer===q.answer)b.classList.add("correct")});if(!correct)btn.classList.add("wrong");
+  document.querySelector("#gameFeedback").innerHTML=`<div class="feedback"><strong>${correct?"✓ Correct":"✗ Not quite"}</strong><p>${esc(q.explanation||"")}</p>
+    <div class="rating-row"><button class="rating" id="gameEasy">Easy · next</button><button class="rating" id="gameHard">Hard · repeat later</button></div></div>`;
+  document.querySelector("#gameEasy").onclick=()=>nextGame(kind,false);document.querySelector("#gameHard").onclick=()=>nextGame(kind,true);
+}
+function nextGame(kind,hard){if(hard)gameDeck.push(gameDeck[gamePos]);gamePos++;if(gamePos>=gameDeck.length)finishGame(kind);else renderGame(kind)}
+function finishGame(kind){
+  stopTimer("game");const total=gameStats.right+gameStats.wrong,accuracy=total?Math.round(gameStats.right/total*100):0;
+  state.gamesPlayed++;save();
+  app.innerHTML=shell("Game complete",kind);
+  app.innerHTML+=`<div class="completion"><span class="tag">ROUND COMPLETE</span><h2>Nice. Round finished.</h2><div class="completion-stats">${statBox("RIGHT",gameStats.right,"right")}${statBox("WRONG",gameStats.wrong,"wrong")}<div><strong>${accuracy}%</strong><span>Accuracy</span></div></div><button class="btn" id="playAgain">Play again</button></div>`;
+  document.querySelector("#playAgain").onclick=()=>startGame(kind);
+}
+
+/* EXPLORE */
 function explore(){
- app.innerHTML=shell('Explore','Search authors, works, theories and concepts across the growing knowledge graph.');
- app.innerHTML+=`<input class="search" id="search" placeholder="Search author, work, theory, concept…"><div id="results"></div>`;
- const draw=()=>{const q=document.querySelector('#search').value.toLowerCase();const a=authorsData.filter(x=>x.name.toLowerCase().includes(q)),w=worksData.filter(x=>[x.title,x.authors?.name].join(' ').toLowerCase().includes(q)),t=theoriesData.filter(x=>x.name.toLowerCase().includes(q)),c=conceptsData.filter(x=>x.name.toLowerCase().includes(q));document.querySelector('#results').innerHTML=`<div class="grid">${a.map(x=>`<div class="card"><span class="tag">AUTHOR</span><h2>${esc(x.name)}</h2><p>${x.birth_year||''}${x.death_year?'–'+x.death_year:''}</p></div>`).join('')}${w.map(x=>`<div class="card"><span class="tag">WORK</span><h2>${esc(x.title)}</h2><p>${esc(x.authors?.name||'')} · ${x.publication_year||''}</p></div>`).join('')}${t.map(x=>`<div class="card"><span class="tag">THEORY</span><h2>${esc(x.name)}</h2><p>${esc(x.theorists?.name||'')}</p></div>`).join('')}${c.map(x=>`<div class="card"><span class="tag">CONCEPT</span><h2>${esc(x.name)}</h2><p>${esc(x.definition||'')}</p></div>`).join('')||'<div class="empty">No matching records.</div>'}</div>`};
- document.querySelector('#search').oninput=draw;draw()
+  app.innerHTML=shell("Explore","Search the literature database. Author results are clickable and open dedicated author pages.");
+  app.innerHTML+=`<input class="search" id="exploreSearch" placeholder="Search author, work, theory or concept…"><div id="exploreResults"></div>`;
+  const draw=()=>{
+    const q=document.querySelector("#exploreSearch").value.toLowerCase().trim();
+    const a=authors.filter(x=>x.name.toLowerCase().includes(q));
+    const w=works.filter(x=>`${x.title} ${x.authors?.name||""}`.toLowerCase().includes(q));
+    const t=theories.filter(x=>x.name.toLowerCase().includes(q));
+    const c=concepts.filter(x=>`${x.name} ${x.definition||""}`.toLowerCase().includes(q));
+    const html=[...a.map(x=>`<a class="card card-link" href="#author-${encodeURIComponent(x.id)}"><span class="tag">AUTHOR</span><h2>${esc(x.name)}</h2><p>${x.birth_year||""}${x.death_year?"–"+x.death_year:""}</p><span class="arrow">Open author page →</span></a>`),
+      ...w.map(x=>`<div class="card"><span class="tag">WORK</span><h2>${esc(x.title)}</h2><p>${esc(x.authors?.name||"")} ${x.publication_year?"· "+x.publication_year:""}</p></div>`),
+      ...t.map(x=>`<div class="card"><span class="tag">THEORY</span><h2>${esc(x.name)}</h2><p>${esc(x.theorists?.name||"")}</p></div>`),
+      ...c.map(x=>`<div class="card"><span class="tag">CONCEPT</span><h2>${esc(x.name)}</h2><p>${esc(x.definition||"")}</p></div>`)].join("");
+    document.querySelector("#exploreResults").innerHTML=html?`<div class="grid">${html}</div>`:`<div class="empty">No matching records.</div>`;
+  };
+  document.querySelector("#exploreSearch").oninput=draw;draw();
 }
-function progress(){const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;const hard=Object.values(state.cardRatings).filter(x=>x==='hard').length;app.innerHTML=shell('Progress','Local practice stats are shown here for now. Account-based cloud progress will be added alongside authentication.');app.innerHTML+=`<div class="grid"><div class="card"><span class="tag">QUIZ</span><div class="stat">${accuracy}%</div><p>Current quiz accuracy</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div><div class="card"><span class="tag">REPETITION</span><div class="stat">${state.wrong.length}</div><p>Questions marked for repetition</p></div><div class="card"><span class="tag">FLASHCARDS</span><div class="stat">${hard}</div><p>Cards rated Hard</p></div><div class="card"><span class="tag">GAMES</span><div class="stat">${state.gamesPlayed}</div><p>Game rounds played</p></div></div>`}
-
-/* ---------- ADMIN CMS ---------- */
-let adminEditId=null;
-let adminTabName='authors';
-
-const adminConfig={
- authors:{label:'Authors',table:'authors',fields:[
-  ['name','Name','text',true],['birth_year','Birth year','number'],['death_year','Death year','number'],['nationality','Nationality','text'],['biography','Biography','textarea'],['notes','Notes','textarea']
- ]},
- works:{label:'Works',table:'works',fields:[
-  ['title','Title','text',true],['author_id','Author','author'],['publication_year','Publication year','number'],['publication_date','Publication date','text'],['genre','Genre','text'],['description','Description','textarea'],['notes','Notes','textarea']
- ]},
- characters:{label:'Characters',table:'characters',fields:[
-  ['name','Name','text',true],['work_id','Work','work'],['description','Description','textarea']
- ]},
- movements:{label:'Movements',table:'movements',fields:[
-  ['name','Name','text',true],['period','Period','text'],['description','Description','textarea']
- ]},
- theorists:{label:'Theorists',table:'theorists',fields:[
-  ['name','Name','text',true],['description','Description','textarea']
- ]},
- theories:{label:'Theories',table:'theories',fields:[
-  ['name','Theory name','text',true],['theorist_id','Theorist','theorist'],['description','Description','textarea'],['key_terms','Key terms','textarea']
- ]},
- concepts:{label:'Concepts',table:'concepts',fields:[
-  ['name','Name','text',true],['definition','Definition','textarea'],['notes','Notes','textarea']
- ]},
- learn_content:{label:'Learn Pages',table:'learn_content',content:true,fields:[
-  ['topic_id','Topic','topic'],['title','Page title','text',true],['body','Page content','textarea',true],['source','Source','text'],['published','Published','checkbox']
- ]},
- quiz_questions:{label:'Quiz Questions',table:'quiz_questions',content:true,quiz:true,fields:[
-  ['topic_id','Topic','topic'],['question','Question','textarea',true],['explanation','Explanation','textarea'],['source','Source','text'],['published','Published','checkbox']
- ]},
- flashcards:{label:'Flashcards',table:'flashcards',content:true,fields:[
-  ['topic_id','Topic','topic'],['front','Front','text',true],['back','Back','textarea',true],['source','Source','text'],['published','Published','checkbox']
- ]},
- game_questions:{label:'Game Questions',table:'game_questions',content:true,fields:[
-  ['topic_id','Topic','topic'],['game_type','Game type','text',true],['prompt','Prompt','textarea',true],['answer','Answer','text',true],['choices','Choices (JSON)','textarea'],['explanation','Explanation','textarea'],['source','Source','text'],['published','Published','checkbox']
- ]}
-};
-
-function admin(){app.innerHTML=shell('Admin','Private content management for STUPIDIFICATION. Create, edit, publish, unpublish and delete your literature database records.');app.innerHTML+=`<div id="adminRoot"></div>`;renderAdmin()}
-
-async function renderAdmin(){
- const {data:{session}}=await sb.auth.getSession();
- const root=document.querySelector('#adminRoot');
- if(!session){
-  root.innerHTML=`<div class="card" style="max-width:520px;margin:auto"><span class="tag">ADMIN LOGIN</span><h2>Enter the library</h2><p>Use your Supabase account. If this is the first account, you can claim the first admin seat.</p><input class="search" id="email" type="email" placeholder="Email"><input class="search" id="password" type="password" placeholder="Password"><div class="hero-actions"><button class="btn" id="login">Sign in</button><button class="btn secondary" id="signup">Create account</button></div><div id="authMsg"></div></div>`;
-  document.querySelector('#login').onclick=authLogin;document.querySelector('#signup').onclick=authSignup;return;
- }
- const {data:profile}=await sb.from('profiles').select('is_admin,display_name').eq('id',session.user.id).single();
- if(!profile?.is_admin){
-  root.innerHTML=`<div class="empty"><strong>Your account is not an admin yet.</strong><p>If you are the owner and this is the first account, click below to claim the first admin seat.</p><button class="btn" id="claim">Claim first admin</button> <button class="btn secondary" id="logout">Sign out</button><div id="adminMsg"></div></div>`;
-  document.querySelector('#claim').onclick=async()=>{const {data,error}=await sb.rpc('claim_first_admin');document.querySelector('#adminMsg').innerHTML=error?`<p>${esc(error.message)}</p>`:`<p>${data?'Admin access granted. Refreshing…':'No admin seat available.'}</p>`;if(data)setTimeout(renderAdmin,600)};
-  document.querySelector('#logout').onclick=()=>sb.auth.signOut().then(renderAdmin);return;
- }
- root.innerHTML=adminDashboard(session.user);wireAdmin();
+function authorPage(id){
+  const a=authors.find(x=>x.id===id);if(!a)return explore();
+  const linked=works.filter(w=>w.author_id===id||w.authors?.name===a.name);
+  app.innerHTML=shell(a.name,"Author profile from the STUPIDIFICATION literature database.");
+  app.innerHTML+=`<a class="back" href="#explore">← Back to Explore</a><div class="card author-hero">
+    <div class="portrait-letter">${esc(a.name.charAt(0))}</div><span class="tag">AUTHOR</span><h2>${esc(a.name)}</h2>
+    <p>${a.birth_year||""}${a.death_year?"–"+a.death_year:""}${a.nationality?" · "+esc(a.nationality):""}</p>
+    ${a.biography?`<p>${esc(a.biography)}</p>`:""}${a.notes?`<p>${esc(a.notes)}</p>`:""}</div>
+    <div class="section-head"><div><span class="tag">WORKS</span><h2>Works</h2></div></div>
+    ${linked.length?`<div class="grid">${linked.map(w=>`<article class="card"><span class="tag">WORK</span><h2>${esc(w.title)}</h2><p>${w.publication_year||""}${w.genre?" · "+esc(w.genre):""}</p>${w.description?`<p>${esc(w.description)}</p>`:""}</article>`).join("")}</div>`:`<div class="empty">No works are linked to this author yet.</div>`}`;
 }
 
-async function authLogin(){const email=document.querySelector('#email').value,password=document.querySelector('#password').value,msg=document.querySelector('#authMsg');const {error}=await sb.auth.signInWithPassword({email,password});msg.innerHTML=error?`<p>${esc(error.message)}</p>`:'<p>Signed in.</p>';if(!error)renderAdmin()}
-async function authSignup(){const email=document.querySelector('#email').value,password=document.querySelector('#password').value,msg=document.querySelector('#authMsg');const {error}=await sb.auth.signUp({email,password});msg.innerHTML=error?`<p>${esc(error.message)}</p>`:'<p>Account created. If email confirmation is enabled, confirm your email, then sign in.</p>'}
-
-function adminDashboard(user){
- const tabs=Object.entries(adminConfig).map(([key,c],i)=>`<button class="btn ${i?'secondary':''}" data-tab="${key}">${c.label}</button>`).join('');
- return `<div class="card"><div class="section-bar"><div><span class="tag">CONTENT CONTROL</span><h2>Admin dashboard</h2><p>${esc(user.email)}</p></div><button class="btn secondary" id="logout">Sign out</button></div><div class="filters" style="flex-wrap:wrap">${tabs}</div><div id="adminPanel"></div></div>`
-}
-function wireAdmin(){document.querySelector('#logout').onclick=()=>sb.auth.signOut().then(renderAdmin);document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>adminTab(b.dataset.tab));adminTab(adminTabName||'authors')}
-
-async function adminTab(tab){
- adminTabName=tab;adminEditId=null;
- const p=document.querySelector('#adminPanel');const c=adminConfig[tab];if(!c)return;
- p.innerHTML=`<div class="filters"><span class="tag">${c.label.toUpperCase()}</span><button class="btn" id="newRecord">+ Add new</button></div><div id="adminEditor"></div><div id="adminList"><p>Loading…</p></div>`;
- document.querySelector('#newRecord').onclick=()=>{adminEditId=null;renderAdminEditor(tab)};
- await renderAdminList(tab);
+/* PROGRESS */
+function progress(){
+  const accuracy=state.quizAttempts?Math.round(state.quizCorrect/state.quizAttempts*100):0;
+  const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
+  app.innerHTML=shell("Progress","Your practice statistics are stored locally in this browser.");
+  app.innerHTML+=`<div class="grid">
+    <div class="card"><span class="tag">QUIZ ACCURACY</span><div class="big-stat">${accuracy}%</div><p>${state.quizCorrect} correct out of ${state.quizAttempts} answered.</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div>
+    <div class="card"><span class="tag">REVIEW</span><div class="big-stat">${state.wrongIds.length}</div><p>Questions you have previously missed.</p></div>
+    <div class="card"><span class="tag">FLASHCARDS</span><div class="big-stat">${hard}</div><p>Cards currently rated Hard.</p></div>
+    <div class="card"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed}</div><p>Game rounds completed.</p></div>
+  </div>`;
 }
 
-function relationOptions(type,selected){
- let arr=[],label='';
- if(type==='author'){arr=authorsData;label='author';}
- if(type==='work'){arr=worksData;label='work';}
- if(type==='theorist'){arr=theoristsData;label='theorist';}
- if(type==='topic'){arr=topics;label='topic';}
- return `<select class="search" id="f_${type}_id"><option value="">Select ${label}…</option>${arr.map(x=>`<option value="${x.id}" ${x.id===selected?'selected':''}>${esc(x.name||x.title)}</option>`).join('')}</select>`;
+/* SIMPLE ADMIN */
+const adminTabs=["authors","works","theorists","theories","concepts","learn_content","quiz_questions","flashcards","game_questions"];
+const adminLabels={authors:"Authors",works:"Works",theorists:"Theorists",theories:"Theories",concepts:"Concepts",learn_content:"Learn Pages",quiz_questions:"Quiz Questions",flashcards:"Flashcards",game_questions:"Game Questions"};
+let adminTab="authors",editingId=null;
+
+function admin(){
+  app.innerHTML=shell("Admin","Manage the database from one place. This is intentionally simple so you can keep adding literature content.");
+  app.innerHTML+=`<div class="admin-tabs">${adminTabs.map(t=>`<button class="${t===adminTab?"active":""}" data-admin="${t}">${adminLabels[t]}</button>`).join("")}</div><div id="adminEditor"></div><div id="adminList"></div>`;
+  document.querySelectorAll("[data-admin]").forEach(b=>b.onclick=()=>{adminTab=b.dataset.admin;editingId=null;admin()});
+  renderAdminEditor();renderAdminList();
+}
+function fieldsFor(tab){
+  const base={
+    authors:[["name","Name","text"],["birth_year","Birth year","number"],["death_year","Death year","number"],["nationality","Nationality","text"],["biography","Biography","textarea"],["notes","Notes","textarea"]],
+    works:[["title","Title","text"],["author_id","Author ID","text"],["publication_year","Publication year","number"],["genre","Genre","text"],["description","Description","textarea"],["notes","Notes","textarea"]],
+    theorists:[["name","Name","text"],["description","Description","textarea"]],
+    theories:[["name","Theory name","text"],["theorist_id","Theorist ID","text"],["description","Description","textarea"],["key_terms","Key terms","textarea"]],
+    concepts:[["name","Name","text"],["definition","Definition","textarea"],["notes","Notes","textarea"]],
+    learn_content:[["topic_id","Topic ID","text"],["title","Title","text"],["body","Content","textarea"],["source","Source","text"],["published","Published","checkbox"]],
+    quiz_questions:[["topic_id","Topic ID","text"],["question","Question","textarea"],["explanation","Explanation","textarea"],["source","Source","text"],["published","Published","checkbox"]],
+    flashcards:[["topic_id","Topic ID","text"],["front","Front","textarea"],["back","Back","textarea"],["source","Source","text"],["published","Published","checkbox"]],
+    game_questions:[["topic_id","Topic ID","text"],["game_type","Game type","text"],["prompt","Prompt","textarea"],["answer","Answer","text"],["choices","Choices JSON","textarea"],["explanation","Explanation","textarea"],["source","Source","text"],["published","Published","checkbox"]]
+  };
+  return base[tab]||[];
+}
+function renderAdminEditor(){
+  const target=document.querySelector("#adminEditor");if(!target)return;
+  const fields=fieldsFor(adminTab);
+  target.innerHTML=`<div class="card"><div class="section-head"><div><span class="tag">${editingId?"EDIT":"NEW"} · ${adminLabels[adminTab]}</span><h2>${editingId?"Edit record":"Add record"}</h2></div></div>
+  <div class="form-grid">${fields.map(([k,l,type])=>`<div class="field ${type==="textarea"?"full":""}"><label>${l}</label>${type==="textarea"?`<textarea id="af_${k}" rows="4"></textarea>`:type==="checkbox"?`<input id="af_${k}" type="checkbox">`:`<input id="af_${k}" type="${type}" id="af_${k}">`}</div>`).join("")}</div>
+  <div class="actions"><button class="btn" id="saveAdmin">Save</button>${editingId?`<button class="btn secondary" id="cancelAdmin">Cancel</button>`:""}</div><div id="adminMsg"></div></div>`;
+  if(editingId)loadAdminRecord(editingId);
+  document.querySelector("#saveAdmin").onclick=saveAdmin;
+  document.querySelector("#cancelAdmin")?.addEventListener("click",()=>{editingId=null;renderAdminEditor()});
+}
+async function loadAdminRecord(id){
+  const {data}=await sb.from(adminTab).select("*").eq("id",id).single();if(!data)return;
+  fieldsFor(adminTab).forEach(([k])=>{const e=document.querySelector("#af_"+k);if(!e)return;if(e.type==="checkbox")e.checked=!!data[k];else e.value=typeof data[k]==="object"?JSON.stringify(data[k]):data[k]??""});
+}
+async function saveAdmin(){
+  const payload={};
+  for(const [k,l,type] of fieldsFor(adminTab)){const e=document.querySelector("#af_"+k);if(!e)continue;if(type==="checkbox")payload[k]=e.checked;else if(adminTab==="game_questions"&&k==="choices"){try{payload[k]=JSON.parse(e.value||"[]")}catch(_){document.querySelector("#adminMsg").textContent="Choices JSON is invalid.";return}}else payload[k]=e.value||null}
+  const result=editingId?await sb.from(adminTab).update(payload).eq("id",editingId):await sb.from(adminTab).insert(payload);
+  document.querySelector("#adminMsg").textContent=result.error?result.error.message:"Saved.";
+  if(!result.error){editingId=null;await loadData();renderAdminEditor();renderAdminList()}
+}
+async function renderAdminList(){
+  const target=document.querySelector("#adminList");if(!target)return;
+  const {data,error}=await sb.from(adminTab).select("*").order("created_at",{ascending:false});
+  if(error){target.innerHTML=`<div class="empty">${esc(error.message)}</div>`;return}
+  target.innerHTML=`<div class="card"><input class="search" id="adminSearch" placeholder="Search ${adminLabels[adminTab]}…"><div id="adminRows"></div></div>`;
+  const draw=()=>{
+    const q=(document.querySelector("#adminSearch").value||"").toLowerCase();
+    const rows=(data||[]).filter(r=>JSON.stringify(r).toLowerCase().includes(q));
+    document.querySelector("#adminRows").innerHTML=rows.length?rows.map(r=>`<div class="admin-row"><div><strong>${esc(r.name||r.title||r.question||r.front||r.prompt||"Untitled")}</strong><div class="muted">${esc(r.description||r.explanation||r.source||"")}</div></div><div class="mini-actions"><button class="mini-btn" data-edit="${r.id}">Edit</button><button class="mini-btn danger" data-del="${r.id}">Delete</button></div></div>`).join(""):`<div class="empty">No records found.</div>`;
+    document.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{editingId=b.dataset.edit;renderAdminEditor();window.scrollTo({top:0,behavior:"smooth"})});
+    document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{if(!confirm("Delete this record?"))return;const {error}=await sb.from(adminTab).delete().eq("id",b.dataset.del);if(error)alert(error.message);else{await loadData();renderAdminList()}});
+  };
+  document.querySelector("#adminSearch").oninput=draw;draw();
 }
 
-function fieldHtml(field,value){
- const [k,label,type,required]=field;
- if(type==='checkbox')return `<label class="card" style="padding:14px"><input id="f_${k}" type="checkbox" ${value?'checked':''}> ${label}</label>`;
- if(['author','work','theorist','topic'].includes(type))return relationOptions(type,value);
- if(type==='textarea')return `<textarea class="search" id="f_${k}" rows="6" placeholder="${label}" ${required?'required':''}>${esc(value||'')}</textarea>`;
- return `<input class="search" id="f_${k}" type="${type||'text'}" placeholder="${label}" value="${esc(value||'')}" ${required?'required':''}>`;
-}
-
-async function renderAdminEditor(tab,record=null){
- const c=adminConfig[tab],editor=document.querySelector('#adminEditor');if(!editor)return;
- let optionsHtml='';
- if(c.quiz){
-  const existing=record?.quiz_options||[];
-  optionsHtml=`<div class="card"><span class="tag">ANSWER OPTIONS</span><p>Enter four options and mark the correct answer.</p>${[0,1,2,3].map(i=>{const o=existing[i]?.option_text||'';return `<div style="display:flex;gap:10px;align-items:center;margin:10px 0"><input class="search" id="qopt_${i}" placeholder="Option ${i+1}" value="${esc(o)}"><label><input type="radio" name="correctOpt" value="${i}" ${existing[i]?.is_correct?'checked':''}> Correct</label></div>`}).join('')}</div>`;
- }
- editor.innerHTML=`<div class="card"><div class="section-bar"><div><span class="tag">${record?'EDIT':'NEW'} ${c.label.toUpperCase()}</span><h2>${record?'Edit record':'Add record'}</h2></div>${record?'<button class="btn secondary" id="cancelEdit">Cancel</button>':''}</div><div class="grid">${c.fields.map(f=>fieldHtml(f,record?.[f[0]])).join('')}</div>${optionsHtml}<button class="btn" id="saveAdminRecord">${record?'Save changes':'Create record'}</button><div id="adminFormMsg"></div></div>`;
- if(record)document.querySelector('#cancelEdit').onclick=()=>{adminEditId=null;renderAdminEditor(tab)};
- document.querySelector('#saveAdminRecord').onclick=()=>saveAdminRecord(tab,record?.id||null);
-}
-
-function recordLabel(tab,r){
- if(tab==='works')return `${r.title}${r.authors?.name?' · '+r.authors.name:''}`;
- if(tab==='characters')return `${r.name}${r.works?.title?' · '+r.works.title:''}`;
- if(tab==='theories')return `${r.name}${r.theorists?.name?' · '+r.theorists.name:''}`;
- if(tab==='learn_content'||tab==='quiz_questions'||tab==='flashcards'||tab==='game_questions')return r.title||r.question||r.front||r.prompt||'Untitled';
- return r.name||'Untitled';
-}
-
-function statusBadge(r){if(!('published' in r))return '';return `<span class="tag" style="margin-left:8px">${r.published?'PUBLISHED':'DRAFT'}</span>`}
-
-async function renderAdminList(tab){
- const c=adminConfig[tab],list=document.querySelector('#adminList');if(!list)return;
- let query;
- if(tab==='works')query=sb.from('works').select('*, authors(name)').order('title');
- else if(tab==='characters')query=sb.from('characters').select('*, works(title)').order('name');
- else if(tab==='theories')query=sb.from('theories').select('*, theorists(name)').order('name');
- else if(tab==='learn_content')query=sb.from('learn_content').select('*').order('created_at',{ascending:false});
- else if(tab==='quiz_questions')query=sb.from('quiz_questions').select('*, quiz_options(*)').order('created_at',{ascending:false});
- else query=sb.from(c.table).select('*').order('created_at',{ascending:false});
- const {data,error}=await query;
- if(error){list.innerHTML=`<div class="empty"><strong>Could not load records.</strong><p>${esc(error.message)}</p></div>`;return}
- const rows=data||[];
- if(!rows.length){list.innerHTML=`<div class="empty"><strong>No records yet.</strong><p>Use “+ Add new” to create the first ${esc(c.label.toLowerCase())}.</p></div>`;return}
- list.innerHTML=`<div class="card"><input class="search" id="adminSearch" placeholder="Search ${esc(c.label.toLowerCase())}…"><div id="recordRows"></div></div>`;
- const draw=()=>{const q=(document.querySelector('#adminSearch')?.value||'').toLowerCase();const filtered=rows.filter(r=>JSON.stringify(r).toLowerCase().includes(q));document.querySelector('#recordRows').innerHTML=filtered.length?filtered.map(r=>`<div class="section-bar" style="padding:16px 0;border-bottom:1px solid rgba(0,0,0,.08)"><div><strong>${esc(recordLabel(tab,r))}</strong>${statusBadge(r)}<p style="margin:5px 0 0;opacity:.7">${esc(r.source||r.description||r.definition||r.body||r.explanation||'')}</p></div><div class="hero-actions" style="margin:0;display:flex;gap:6px;flex-wrap:wrap"><button class="btn secondary" data-edit="${r.id}">Edit</button>${'published' in r?`<button class="btn secondary" data-publish="${r.id}">${r.published?'Unpublish':'Publish'}</button>`:''}<button class="btn secondary" data-delete="${r.id}">Delete</button></div></div>`).join(''):`<div class="empty">No matching records.</div>`;wireAdminRowButtons(tab,rows)};
- document.querySelector('#adminSearch').oninput=draw;draw();
-}
-
-function wireAdminRowButtons(tab,rows){
- document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{const r=rows.find(x=>x.id===b.dataset.edit);adminEditId=r.id;renderAdminEditor(tab,r);window.scrollTo({top:document.querySelector('#adminEditor').getBoundingClientRect().top+window.scrollY-80,behavior:'smooth'})});
- document.querySelectorAll('[data-publish]').forEach(b=>b.onclick=async()=>{const r=rows.find(x=>x.id===b.dataset.publish);const {error}=await sb.from(adminConfig[tab].table).update({published:!r.published}).eq('id',r.id);if(error)alert(error.message);else{await refreshAdminData(tab)}});
- document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=async()=>{const r=rows.find(x=>x.id===b.dataset.delete);if(!confirm(`Delete “${recordLabel(tab,r)}”? This cannot be undone.`))return;const ok=await deleteAdminRecord(tab,r.id);if(ok)await refreshAdminData(tab)});
-}
-
-async function deleteAdminRecord(tab,id){
- try{
-  if(tab==='quiz_questions'){
-   const {error:e1}=await sb.from('quiz_options').delete().eq('question_id',id);if(e1)throw e1;
-  }
-  if(tab==='works'){
-   const {error:e2}=await sb.from('characters').delete().eq('work_id',id);if(e2)throw e2;
-  }
-  const {error}=await sb.from(adminConfig[tab].table).delete().eq('id',id);if(error)throw error;
-  return true;
- }catch(e){alert(`Could not delete this record. ${e.message||e}`);return false}
-}
-
-async function refreshAdminData(tab){await loadData();await renderAdminList(tab)}
-
-async function saveAdminRecord(tab,id){
- const c=adminConfig[tab],msg=document.querySelector('#adminFormMsg');const payload={};
- for(const [k,label,type,required] of c.fields){const el=document.querySelector('#f_'+k);if(!el)continue;if(required && !el.value?.trim() && type!=='checkbox'){msg.innerHTML=`<p>Please fill in ${esc(label)}.</p>`;return}if(['author','work','theorist','topic'].includes(type))payload[k]=el.value||null;else if(type==='checkbox')payload[k]=el.checked;else payload[k]=el.value||null}
- if(tab==='game_questions' && payload.choices){try{payload.choices=JSON.parse(payload.choices)}catch(e){msg.innerHTML='<p>Choices must be valid JSON, for example ["A","B","C","D"].</p>';return}}
- let recordId=id;
- let result=id?await sb.from(c.table).update(payload).eq('id',id).select().single():await sb.from(c.table).insert(payload).select().single();
- if(result.error){msg.innerHTML=`<p>${esc(result.error.message)}</p>`;return}
- recordId=result.data.id;
- if(c.quiz){
-  const options=[0,1,2,3].map(i=>({option_text:(document.querySelector('#qopt_'+i)?.value||'').trim(),is_correct:document.querySelector(`input[name="correctOpt"][value="${i}"]`)?.checked||false,sort_order:i})).filter(x=>x.option_text);
-  if(options.length!==4||options.filter(x=>x.is_correct).length!==1){msg.innerHTML='<p>A quiz question needs exactly four options and exactly one correct answer.</p>';if(!id)await sb.from(c.table).delete().eq('id',recordId);return}
-  const {error:delError}=await sb.from('quiz_options').delete().eq('question_id',recordId);if(delError){msg.innerHTML=`<p>${esc(delError.message)}</p>`;return}
-  const {error:optError}=await sb.from('quiz_options').insert(options.map(x=>({...x,question_id:recordId})));if(optError){msg.innerHTML=`<p>${esc(optError.message)}</p>`;return}
- }
- msg.innerHTML=`<p>${id?'Changes saved.':'Record created.'}</p>`;adminEditId=null;await refreshAdminData(tab);renderAdminEditor(tab);
-}
-
-/* ---------- ROUTING ----------
-   IMPORTANT: UUIDs contain hyphens. Never split a UUID on "-".
-   Topic routes now contain only the topic UUID:
-   #learn-topic-TOPIC_UUID
-   #quiz-topic-TOPIC_UUID
-   #flashcards-topic-TOPIC_UUID
-*/
+/* ROUTING */
 function render(){
- setActive();
- document.title=`STUPIDIFICATION · ${route.replaceAll('-',' ')}`;
- if(route==='home')home();
- else if(route==='learn')learn();
- else if(route.startsWith('learn-topic-'))learnTopic(decodeURIComponent(route.slice('learn-topic-'.length)));
- else if(route.startsWith('learn-'))learnModule(decodeURIComponent(route.slice('learn-'.length)));
- else if(route==='quiz')topicCards('quiz');
- else if(route.startsWith('quiz-category-'))topicCategory('quiz',decodeURIComponent(route.slice('quiz-category-'.length)));
- else if(route.startsWith('quiz-topic-'))selectedTopic('quiz',decodeURIComponent(route.slice('quiz-topic-'.length)));
- else if(route==='flashcards')topicCards('flashcards');
- else if(route.startsWith('flashcards-category-'))topicCategory('flashcards',decodeURIComponent(route.slice('flashcards-category-'.length)));
- else if(route.startsWith('flashcards-topic-'))selectedTopic('flashcards',decodeURIComponent(route.slice('flashcards-topic-'.length)));
- else if(route==='games')games();
- else if(route==='game-match')gameMatch('author');
- else if(route==='game-date')gameMatch('date');
- else if(route==='game-chronology')chronology();
- else if(route==='game-theory')gameTheory();
- else if(route==='explore')explore();
- else if(route==='progress')progress();
- else if(route==='admin')admin();
- else home();
- window.scrollTo({top:0,behavior:'smooth'})
+  setActive();
+  if(route==="home")home();
+  else if(route==="learn")learn();
+  else if(route.startsWith("learn-module-"))learnModule(decodeURIComponent(route.slice(12)));
+  else if(route.startsWith("learn-topic-"))learnTopic(decodeURIComponent(route.slice(11)));
+  else if(route==="quiz")quiz();
+  else if(route.startsWith("quiz-module-"))quizModule(decodeURIComponent(route.slice(12)));
+  else if(route.startsWith("quiz-topic-"))startQuiz(decodeURIComponent(route.slice(11)));
+  else if(route==="flashcards")flashcards();
+  else if(route.startsWith("cards-module-"))cardsModule(decodeURIComponent(route.slice(13)));
+  else if(route.startsWith("cards-topic-"))startCards(decodeURIComponent(route.slice(12)));
+  else if(route==="games")games();
+  else if(route.startsWith("game-"))startGame(route.slice(5));
+  else if(route==="explore")explore();
+  else if(route.startsWith("author-"))authorPage(decodeURIComponent(route.slice(7)));
+  else if(route==="progress")progress();
+  else if(route==="admin")admin();
+  else home();
+  window.scrollTo({top:0,behavior:"smooth"});
 }
-async function boot(){window.learnCache=(await sb.from('learn_content').select('*').eq('published',true)).data||[];await loadData();render()}
-window.addEventListener('hashchange',()=>{route=location.hash.slice(1)||'home';document.querySelector('#mainNav').classList.remove('open');document.querySelector('#menuToggle').setAttribute('aria-expanded','false');render()});
-document.querySelector('#menuToggle').onclick=()=>{const nav=document.querySelector('#mainNav');nav.classList.toggle('open');document.querySelector('#menuToggle').setAttribute('aria-expanded',nav.classList.contains('open'))};
-boot();
+window.addEventListener("hashchange",()=>{route=location.hash.slice(1)||"home";document.querySelector("#mainNav").classList.remove("open");render()});
+document.querySelector("#menuToggle").onclick=()=>document.querySelector("#mainNav").classList.toggle("open");
+
+(async()=>{try{await loadData()}catch(e){console.error(e)}render()})();
