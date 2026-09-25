@@ -223,20 +223,22 @@ function cleanObject(row){const out={};Object.entries(row||{}).forEach(([k,v])=>
 function alias(row,names){for(const n of names){const k=normKey(n);if(row[k]!==undefined&&String(row[k]).trim()!=='')return row[k]}return ''}
 function boolValue(v,def=false){if(v===undefined||v===null||String(v).trim()==='')return def;return ['true','1','yes','y','published','publish'].includes(String(v).trim().toLowerCase())}
 function numberValue(v){if(v===undefined||v===null||String(v).trim()==='')return null;const n=Number(String(v).replace(/,/g,''));return Number.isFinite(n)?n:null}
-function relationId(type,value){
- const v=String(value??'').trim(); if(!v)return null;
- const source=type==='module'?rows.modules:type==='topic'?rows.topics:type==='author'?rows.authors:type==='work'?rows.works:type==='theorist'?rows.theorists:[];
- const title=type==='work'?'title':'name';
- const hit=source.find(x=>String(x.id)===v)||source.find(x=>String(x[title]??'').trim().toLowerCase()===v.toLowerCase());
- return hit?.id||null;
+function relationSource(type){return type==='module'?rows.modules:type==='topic'?rows.topics:type==='author'?rows.authors:type==='work'?rows.works:type==='theorist'?rows.theorists:[]}
+function relationTitle(type){return type==='work'?'title':'name'}
+function relationMatches(type,value){
+ const v=String(value??'').trim().toLowerCase(); if(!v)return [];
+ const source=relationSource(type),title=relationTitle(type);
+ const exact=source.find(x=>String(x.id)===String(value)||String(x[title]??'').trim().toLowerCase()===v);
+ if(exact)return [exact];
+ const compact=v.replace(/[^a-z0-9]+/g,' ');
+ const tokens=compact.split(/\s+/).filter(Boolean);
+ const scored=source.map(x=>{const name=String(x[title]??'').trim().toLowerCase();const nt=name.replace(/[^a-z0-9]+/g,' ');let score=0;if(nt.includes(compact)||compact.includes(nt))score+=100;for(const t of tokens)if(t.length>2&&nt.includes(t))score+=10;return{x,score}}).filter(z=>z.score>0).sort((a,b)=>b.score-a.score);
+ if(!scored.length)return [];
+ const best=scored[0].score;
+ return scored.filter(z=>z.score===best).slice(0,5).map(z=>z.x);
 }
-function relationLabel(type,value){
- const v=String(value??'').trim(); if(!v)return '';
- const source=type==='module'?rows.modules:type==='topic'?rows.topics:type==='author'?rows.authors:type==='work'?rows.works:type==='theorist'?rows.theorists:[];
- const title=type==='work'?'title':'name';
- const hit=source.find(x=>String(x.id)===v)||source.find(x=>String(x[title]??'').trim().toLowerCase()===v.toLowerCase());
- return hit?String(hit[title]):v;
-}
+function relationId(type,value){const m=relationMatches(type,value);return m.length===1?m[0].id:null}
+function relationLabel(type,value){const v=String(value??'').trim();if(!v)return '';const hit=relationSource(type).find(x=>String(x.id)===v);return hit?String(hit[relationTitle(type)]):v}
 function gameTypeValue(v){
  const x=String(v??'').trim().toLowerCase();
  const hit=gameTypes.find(g=>g.key===x||g.label.toLowerCase()===x||g.label.toLowerCase().replace(/[^a-z0-9]+/g,'_')===x);
@@ -270,7 +272,7 @@ function parseBulkRecord(type,row,index){
  }
  if(type==='concepts')payload={name:alias(r,['name']),definition:alias(r,['definition']),notes:alias(r,['notes'])};
  if(type==='learn_content'){
-   const t=alias(r,['topic','topic_name','topic_id']);payload={topic_id:relationId('topic',t),title:alias(r,['title']),body:alias(r,['body','content']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false)};if(t&&!payload.topic_id)err.push(`topic not found: ${t}`);
+   const t=alias(r,['topic','topic_name','topic_id']);payload={topic_id:relationId('topic',t),title:alias(r,['title']),body:alias(r,['body','content']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false)};if(t&&!payload.topic_id){const candidates=relationMatches('topic',t);err.push(candidates.length>1?`topic needs selection: ${t}`:`topic not found: ${t}`)}
  }
  if(type==='quiz_questions'){
    const t=alias(r,['topic','topic_name','topic_id']);
@@ -280,15 +282,15 @@ function parseBulkRecord(type,row,index){
    const correctRaw=String(alias(r,['correct_answer','correct','answer','correct_option'])).trim();
    let ci=-1;if(/^[1-4]$/.test(correctRaw))ci=Number(correctRaw)-1;else if(/^[a-d]$/i.test(correctRaw))ci=correctRaw.toLowerCase().charCodeAt(0)-97;else ci=opts.findIndex(x=>String(x).trim().toLowerCase()===correctRaw.toLowerCase());
    payload={topic_id:relationId('topic',t),question:alias(r,['question','prompt']),explanation:alias(r,['explanation']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false),_options:opts.slice(0,4),_correct:ci};
-   if(t&&!payload.topic_id)err.push(`topic not found: ${t}`);if(payload._options.some(x=>!x))err.push('needs 4 options');if(ci<0||ci>3)err.push('correct_answer must be 1-4, A-D, or exact option text');
+   if(t&&!payload.topic_id){const candidates=relationMatches('topic',t);err.push(candidates.length>1?`topic needs selection: ${t}`:`topic not found: ${t}`)}if(payload._options.some(x=>!x))err.push('needs 4 options');if(ci<0||ci>3)err.push('correct_answer must be 1-4, A-D, or exact option text');
  }
  if(type==='flashcards'){
-   const t=alias(r,['topic','topic_name','topic_id']);payload={topic_id:relationId('topic',t),front:alias(r,['front','question']),back:alias(r,['back','answer']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false)};if(t&&!payload.topic_id)err.push(`topic not found: ${t}`);
+   const t=alias(r,['topic','topic_name','topic_id']);payload={topic_id:relationId('topic',t),front:alias(r,['front','question']),back:alias(r,['back','answer']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false)};if(t&&!payload.topic_id){const candidates=relationMatches('topic',t);err.push(candidates.length>1?`topic needs selection: ${t}`:`topic not found: ${t}`)}
  }
  if(type==='game_questions'){
    const t=alias(r,['topic','topic_name','topic_id']),gt=gameTypeValue(alias(r,['game_type','game','category']));
    payload={topic_id:relationId('topic',t),game_type:gt,prompt:alias(r,['prompt','question']),answer:alias(r,['answer','correct_answer']),choices:splitChoices(alias(r,['choices','options'])),explanation:alias(r,['explanation']),source:alias(r,['source']),published:boolValue(alias(r,['published','status']),false)};
-   if(!gt)err.push('unknown game_type');if(t&&!payload.topic_id)err.push(`topic not found: ${t}`);if(payload.choices.length<2)err.push('needs at least 2 choices');if(payload.answer&&!payload.choices.includes(payload.answer))err.push('answer must exactly match one choice');
+   if(!gt)err.push('unknown game_type');if(t&&!payload.topic_id){const candidates=relationMatches('topic',t);err.push(candidates.length>1?`topic needs selection: ${t}`:`topic not found: ${t}`)}if(payload.choices.length<2)err.push('needs at least 2 choices');if(payload.answer&&!payload.choices.includes(payload.answer))err.push('answer must exactly match one choice');
  }
  return {row:r,payload,error:err.join('; '),rowNumber:index+2};
 }
@@ -311,12 +313,19 @@ async function previewBulkImport(){
    msg.textContent=`Loaded ${bulkParsedRows.length} row${bulkParsedRows.length===1?'':'s'} from ${bulkFileName}.`;
  }catch(e){msg.textContent=`Could not read file: ${e.message}`}
 }
+function fixBulkRelation(rowNumber,type,value){
+ const item=bulkParsedRows.find(x=>x.rowNumber===Number(rowNumber));if(!item)return;
+ if(type==='topic'){const id=relationId('topic',value);item.payload.topic_id=id||null;item.error=item.error.replace(/topic (not found|needs selection):[^;]*/i,'').replace(/^;\s*|;\s*$/g,'').trim();}
+ const valid=bulkParsedRows.filter(x=>!x.error).length,invalid=bulkParsedRows.length-valid;
+ const dupCount=bulkParsedRows.filter(x=>!x.error&&document.querySelector('#bulkSkipDuplicates')?.checked&&duplicateExists(type,x.payload)).length;
+ renderBulkPreview(type,bulkParsedRows,valid,invalid,dupCount);
+}
 function renderBulkPreview(type,data,valid,invalid,dupCount){
  const card=document.querySelector('#bulkPreviewCard');card.style.display='block';
  const schema=bulkSchemas[type];
  card.innerHTML=`<div class="bulk-preview-head"><div><div class="eyebrow">STEP 3 · PREVIEW</div><h2>${schema.label}</h2><p>${data.length} rows loaded · <span class="good-text">${valid} valid</span> · <span class="bad-text">${invalid} invalid</span>${dupCount?` · ${dupCount} exact duplicate${dupCount===1?'':'s'} will be skipped`:''}</p></div><button class="btn" id="startBulkImport" ${valid?'':'disabled'}>Import ${valid} row${valid===1?'':'s'}</button></div>
  <div class="bulk-errors">${data.filter(x=>x.error).slice(0,8).map(x=>`<div><strong>Row ${x.rowNumber}:</strong> ${esc(x.error)}</div>`).join('')||'<span>No validation errors in the preview.</span>'}</div>
- <div class="table-wrap"><table class="table bulk-table"><thead><tr><th>Row</th><th>Preview</th><th>Topic / relation</th><th>Status</th></tr></thead><tbody>${data.slice(0,12).map(x=>{const p=x.payload;let title=p.question||p.prompt||p.title||p.name||p.front||'—';let rel=relationLabel('topic',p.topic_id)||relationLabel('author',p.author_id)||relationLabel('work',p.work_id)||'';return `<tr><td>${x.rowNumber}</td><td><strong>${esc(String(title).slice(0,180))}</strong></td><td>${esc(rel||'—')}</td><td>${x.error?`<span class="pill no">${esc(x.error)}</span>`:'<span class="pill ok">Ready</span>'}</td></tr>`}).join('')}</tbody></table></div>`;
+ <div class="table-wrap"><table class="table bulk-table"><thead><tr><th>Row</th><th>Preview</th><th>Topic / relation</th><th>Status</th></tr></thead><tbody>${data.slice(0,12).map(x=>{const p=x.payload;const title=p.question||p.prompt||p.title||p.name||p.front||'—';const rel=relationLabel('topic',p.topic_id)||relationLabel('author',p.author_id)||relationLabel('work',p.work_id)||'';const rawTopic=alias(x.row,['topic','topic_name','topic_id']);const needsTopic=x.error&&/topic (not found|needs selection):/i.test(x.error);const choices=needsTopic?relationMatches('topic',rawTopic):[];const ui=needsTopic&&choices.length?`<select class="bulk-relation-select" onchange="fixBulkRelation(${x.rowNumber},'topic',this.value)"><option value="">Select matching topic…</option>${choices.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>`:(rel||'—');return `<tr><td>${x.rowNumber}</td><td><strong>${esc(String(title).slice(0,180))}</strong></td><td>${ui}</td><td>${x.error?`<span class="pill no">${esc(x.error)}</span>`:'<span class="pill ok">Ready</span>'}</td></tr>`}).join('')}</tbody></table></div>`;
  document.querySelector('#startBulkImport')?.addEventListener('click',()=>runBulkImport(type));
 }
 async function runBulkImport(type){
@@ -364,6 +373,6 @@ function showModal(title,body){const m=document.querySelector('#modal');m.innerH
 function closeModal(){document.querySelector('#modal')?.classList.remove('open')}
 async function removeRow(k,id){const r=rows[k].find(x=>x.id===id);if(!confirm(`Delete “${displayTitle(k,r)}”? This cannot be undone.`))return;const res=await sb.from(configs[k].table).delete().eq('id',id);if(res.error){alert(res.error.message);return}await refresh(k);if(k==='quiz_questions')await refresh('quiz_options');if(k==='game_questions')renderGameManager(document.querySelector('#panel'));else drawTable();renderMetrics()}
 async function refresh(k){let q=sb.from(k).select('*').limit(5000);const {data}=await q;rows[k]=data||[]}
-window.openEditor=openEditor;window.removeRow=removeRow;
+window.openEditor=openEditor;window.removeRow=removeRow;window.fixBulkRelation=fixBulkRelation;
 sb.auth.onAuthStateChange((_event,session)=>{if(!session){user=null;login()}});
 boot();
