@@ -25,6 +25,31 @@ const shuffle=a=>[...a].sort(()=>Math.random()-.5);
 const feature=(tag,title,desc,href)=>`<a class="card card-link" href="${href}"><span class="tag">${tag}</span><h2>${title}</h2><p>${desc}</p><span class="arrow">Open →</span></a>`;
 const shell=(title,intro)=>`<section class="page-head"><div class="eyebrow">STUPIDIFICATION · ${esc(title)}</div><h1 class="page-title">${esc(title)}</h1><p class="intro">${intro}</p></section>`;
 const statBox=(label,value,cls="")=>`<div class="quiz-stat ${cls}"><span>${label}</span><strong>${value}</strong></div>`;
+const optionLetters=["A","B","C","D","E","F"];
+function cleanQuizQuestion(text, options=[]){
+  let s=String(text||"").replace(/\s+/g," ").trim();
+  if(!s)return s;
+  // Some imported PYQs contain the full A/B/C/D options inside the question field.
+  // The actual options are already stored separately, so keep only the stem.
+  if(Array.isArray(options) && options.length){
+    const qmark=s.search(/[?।]/);
+    if(qmark>=0){
+      const after=s.slice(qmark+1);
+      const aMark=after.match(/\s*[“”‘’'\(\[]?\s*A\s*[\.\):\-]/i);
+      if(aMark)s=s.slice(0,qmark+1).trim();
+    }
+    const marker=/([.!])\s*[“”‘’'\(\[]?\s*A\s*[\.\):\-]/i;
+    const match=s.match(marker);
+    if(match && match.index>0)s=s.slice(0,match.index+1).trim();
+  }
+  return s.replace(/[“”‘’]$/g,"").trim();
+}
+function cleanQuizOption(text){
+  return String(text||"").replace(/^\s*[A-F]\s*[\.\):\-]\s*/i,"").trim();
+}
+function quizHead(topicName){
+  return `<section class="quiz-page-head"><div class="eyebrow">STUPIDIFICATION · QUIZ · ${esc(topicName||"Topic")}</div><h1>${esc(topicName||"Quiz")}</h1><p>Answer first. Then read the explanation and rate the question.</p></section>`;
+}
 
 function setActive(){
   document.querySelectorAll("[data-route]").forEach(a=>{
@@ -66,7 +91,7 @@ function home(){
     ${feature("FLASHCARDS","Active recall","Flip cards and rate them so difficult cards return more often.","#flashcards")}
     ${feature("GAMES","Literature games","Practice authors, works, dates, chronology and theory.","#games")}
     ${feature("EXPLORE","Knowledge graph","Open individual author pages and browse connected works.","#explore")}
-    ${feature("PROGRESS","Your practice","See accuracy, repeated questions and study activity.","#progress")}
+    ${feature("PROFILE","Your practice","See your account, quiz accuracy, flashcards and games in one place.","#profile")}
   </div>`;
 }
 
@@ -113,15 +138,18 @@ function renderQuiz(topicId){
   const topic=topics.find(t=>t.id===topicId);
   if(!quizDeck.length){app.innerHTML=shell("Quiz",topic?.name||"Topic")+`<div class="empty">No published questions are available for this topic.</div>`;return}
   const q=quizDeck[quizPos];
-  const options=shuffle(q.options);
-  app.innerHTML=shell(`Quiz · ${topic?.name||""}`,"Answer first. Then read the explanation and rate the question.");
-  app.innerHTML+=`<div class="quiz-wrap">
+  const optionData=shuffle((q.optionRows||[]).map(row=>({row,text:cleanQuizOption(row.option_text)})));
+  const options=optionData.map(x=>x.text);
+  const letters=optionLetters;
+  const stem=cleanQuizQuestion(q.question,options);
+  app.innerHTML=quizHead(topic?.name||"");
+  app.innerHTML+=`<div class="quiz-wrap quiz-screen">
     <div class="quiz-dashboard">
       ${statBox("RIGHT",quizStats.right,"right")}${statBox("WRONG",quizStats.wrong,"wrong")}${statBox("TIME","0s")}
     </div>
     <div class="quiz-meta"><span>Question ${quizPos+1}</span><span>${quizDeck.length} in current deck</span></div>
-    <h2 class="quiz-question">${esc(q.question)}</h2>
-    <div class="options">${options.map(o=>`<button class="option" data-answer="${esc(o)}">${esc(o)}</button>`).join("")}</div>
+    <h2 class="quiz-question">${esc(stem)}</h2>
+    <div class="options">${optionData.map((item,i)=>`<button class="option" data-answer="${esc(item.text)}"><span class="option-letter">${letters[i]||String(i+1)}.</span><span>${esc(item.text)}</span></button>`).join("")}</div>
     <div id="quizFeedback"></div>
   </div>`;
   quizStarted=Date.now();
@@ -129,12 +157,13 @@ function renderQuiz(topicId){
   document.querySelectorAll(".option").forEach(b=>b.onclick=()=>answerQuiz(b,q,topicId));
 }
 function answerQuiz(btn,q,topicId){
-  if(!quizTimer)return;
+  if(!quizStarted)return;
   stopTimer("quiz");
-  const correct=btn.dataset.answer===q.answer;
+  const selectedText=cleanQuizOption(btn.dataset.answer);
+  const correct=selectedText===cleanQuizOption(q.answer);
   if(correct){quizStats.right++;state.quizCorrect++}else{quizStats.wrong++;if(!state.wrongIds.includes(q.id))state.wrongIds.push(q.id)}
   state.quizAttempts++;save();syncCloudProgress();
-  if(currentUser){const selected=q.optionRows?.find(o=>o.option_text===btn.dataset.answer);sb.from("user_quiz_attempts").insert({user_id:currentUser.id,question_id:q.id,selected_option_id:selected?.id||null,is_correct:correct})}
+  if(currentUser){const selected=q.optionRows?.find(o=>cleanQuizOption(o.option_text)===selectedText);sb.from("user_quiz_attempts").insert({user_id:currentUser.id,question_id:q.id,selected_option_id:selected?.id||null,is_correct:correct})}
   document.querySelectorAll(".option").forEach(b=>{b.disabled=true;if(b.dataset.answer===q.answer)b.classList.add("correct")});
   if(!correct)btn.classList.add("wrong");
   const feedback=document.querySelector("#quizFeedback");
@@ -356,11 +385,12 @@ async function profile(){
   const hard=Object.values(state.cardRatings).filter(x=>x==="hard").length;
   app.innerHTML=shell("Profile","Your STUPIDIFICATION study account and saved progress.");
   app.innerHTML+=`<div class="profile-grid">
-    <div class="card profile-main"><div class="profile-avatar">${esc((currentProfile?.display_name||user.email||"S").charAt(0).toUpperCase())}</div><span class="tag">STUDENT ACCOUNT</span><h2>${esc(currentProfile?.display_name||"Student")}</h2><p>${esc(user.email||"")}</p><button class="btn secondary" id="logoutBtn">Sign out</button></div>
-    <div class="card"><span class="tag">QUIZ ACCURACY</span><div class="big-stat">${accuracy}%</div><p>${state.quizCorrect} correct out of ${state.quizAttempts} answered.</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div>
-    <div class="card"><span class="tag">QUIZ ROUNDS</span><div class="big-stat">${state.quizRounds||0}</div><p>Completed quiz rounds.</p></div>
-    <div class="card"><span class="tag">FLASHCARDS</span><div class="big-stat">${state.flashcardsReviewed||0}</div><p>Cards reviewed · ${hard} currently Hard.</p></div>
-    <div class="card"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed||0}</div><p>Game rounds completed.</p></div>
+    <div class="card profile-main"><div class="profile-avatar">${esc((currentProfile?.display_name||user.email||"S").charAt(0).toUpperCase())}</div><span class="tag">STUDENT ACCOUNT</span><h2 class="profile-name">${esc(currentProfile?.display_name||"Student")}</h2><p class="profile-email">${esc(user.email||"")}</p><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+    <div class="card profile-stat"><span class="tag">QUIZ ACCURACY</span><div class="big-stat">${accuracy}%</div><p>${state.quizCorrect} correct out of ${state.quizAttempts} answered.</p><div class="progress-bar"><div class="progress-fill" style="width:${accuracy}%"></div></div></div>
+    <div class="card profile-stat"><span class="tag">QUIZ ROUNDS</span><div class="big-stat">${state.quizRounds||0}</div><p>Completed quiz rounds.</p></div>
+    <div class="card profile-stat"><span class="tag">FLASHCARDS</span><div class="big-stat">${state.flashcardsReviewed||0}</div><p>Cards reviewed · ${hard} currently Hard.</p></div>
+    <div class="card profile-stat"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed||0}</div><p>Game rounds completed.</p></div>
+    <div class="card profile-review"><span class="tag">REVIEW QUEUE</span><div class="big-stat">${state.wrongIds.length}</div><p>Questions you have previously missed and should revisit.</p></div>
   </div>`;
   document.querySelector("#logoutBtn").onclick=async()=>{await sb.auth.signOut();currentUser=null;currentProfile=null;location.hash="#profile";render()};
 }
@@ -386,8 +416,8 @@ function render(){
   setActive();
   if(route==="home")home();
   else if(route==="learn")learn();
-  else if(route.startsWith("learn-module-"))learnModule(decodeURIComponent(route.slice(12)));
-  else if(route.startsWith("learn-topic-"))learnTopic(decodeURIComponent(route.slice(11)));
+  else if(route.startsWith("learn-module-"))learnModule(decodeURIComponent(route.slice(13)));
+  else if(route.startsWith("learn-topic-"))learnTopic(decodeURIComponent(route.slice(12)));
   else if(route==="quiz")quiz();
   else if(route.startsWith("quiz-module-"))quizModule(decodeURIComponent(route.slice(12)));
   else if(route.startsWith("quiz-topic-"))startQuiz(decodeURIComponent(route.slice(11)));
@@ -398,7 +428,7 @@ function render(){
   else if(route.startsWith("game-"))startGame(route.slice(5));
   else if(route==="explore")explore();
   else if(route.startsWith("author-"))authorPage(decodeURIComponent(route.slice(7)));
-  else if(route==="progress")progress();
+  else if(route==="progress"){location.hash="#profile";return;}
   else if(route==="profile")profile();
   else home();
   window.scrollTo({top:0,behavior:"smooth"});
