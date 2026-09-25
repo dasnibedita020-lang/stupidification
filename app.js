@@ -330,9 +330,17 @@ function progress(){
 let currentUser=null;
 let currentProfile=null;
 
+function updateAuthNav(){
+  const el=document.querySelector("#authNav");
+  if(!el)return;
+  el.textContent=currentUser?"Account":"Sign in";
+  el.setAttribute("aria-label",currentUser?"Open account profile":"Sign in or create an account");
+}
+
 async function getSessionUser(){
   const {data}=await sb.auth.getSession();
   currentUser=data?.session?.user||null;
+  updateAuthNav();
   return currentUser;
 }
 
@@ -407,7 +415,7 @@ async function profile(){
     <div class="card profile-stat"><span class="tag">GAMES</span><div class="big-stat">${state.gamesPlayed||0}</div><p>Game rounds completed.</p></div>
     <div class="card profile-review"><span class="tag">REVIEW QUEUE</span><div class="big-stat">${state.wrongIds.length}</div><p>Questions you have previously missed and should revisit.</p></div>
   </div>`;
-  document.querySelector("#logoutBtn").onclick=async()=>{await sb.auth.signOut();currentUser=null;currentProfile=null;location.hash="#profile";render()};
+  document.querySelector("#logoutBtn").onclick=async()=>{await sb.auth.signOut();currentUser=null;currentProfile=null;updateAuthNav();location.hash="#profile";render()};
 }
 
 async function signUp(){
@@ -416,14 +424,14 @@ async function signUp(){
   if(!email||password.length<6){msg.textContent="Please enter an email and a password of at least 6 characters.";return}
   const {data,error}=await sb.auth.signUp({email,password,options:{data:{display_name:name||email.split("@")[0]}}});
   if(error){msg.textContent=error.message;return}
-  if(data.session){await ensureProfile(data.user,name);await syncCloudProgress();msg.textContent="Account created. Opening your profile…";location.hash="#profile";render()}
+  if(data.session){currentUser=data.user;updateAuthNav();await ensureProfile(data.user,name);await syncCloudProgress();msg.textContent="Account created. Opening your profile…";location.hash="#profile";render()}
   else msg.textContent="Account created. Check your email to confirm your account, then sign in.";
 }
 async function signIn(){
   const email=document.querySelector("#authEmail").value.trim(),password=document.querySelector("#authPassword").value,msg=document.querySelector("#authMessage");
   const {data,error}=await sb.auth.signInWithPassword({email,password});
   if(error){msg.textContent=error.message;return}
-  currentUser=data.user;await ensureProfile(data.user);await loadCloudProgress();await syncCloudProgress();location.hash="#profile";render();
+  currentUser=data.user;updateAuthNav();await ensureProfile(data.user);await loadCloudProgress();await syncCloudProgress();location.hash="#profile";render();
 }
 
 /* ROUTING */
